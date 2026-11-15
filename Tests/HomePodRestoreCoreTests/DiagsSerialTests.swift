@@ -238,14 +238,151 @@ final class DiagsSerialTests: XCTestCase {
             }
             // No button may write flash: writes only go through the SysCfg form.
             XCTAssertNotEqual(action.risk, .writesFlash, action.title)
+            // No button may send a command known to panic the pod.
+            XCTAssertNotEqual(action.risk, .crashesDevice, action.title)
+            for line in action.commands {
+                XCTAssertNotEqual(DiagsCommandReference.risk(ofLine: line), .crashesDevice, line)
+                XCTAssertFalse(line.lowercased().contains("nandinfotool"), "NANDInfoTool panics the pod")
+                // Bare forms that only print a usage error on a real unit.
+                XCTAssertFalse(["nand", "temperature", "sensor", "wifi", "bluetooth", "playaudio", "recordaudio"].contains(line),
+                               "bare `\(line)` only prints a usage error")
+            }
         }
+        XCTAssertEqual(DiagsQuickAction.action(.nandHealth).commands, ["nandcsid", "nandppnfwver", "nanduid", "blockdevice"])
+        XCTAssertEqual(DiagsQuickAction.action(.nandHealth).risk, .readOnly)
+        XCTAssertEqual(DiagsQuickAction.action(.sensors).commands,
+                       ["pmutemp", "temperature --all", "sensor -s touch --get temp", "pmustat all"])
+        XCTAssertEqual(DiagsQuickAction.action(.audioInit).risk, .changesState, "`ampcontroller --init` changes live state")
+        XCTAssertEqual(DiagsQuickAction.action(.audioInfo).risk, .readOnly, "`playaudio --listcaps` only prints")
+        XCTAssertEqual(DiagsQuickAction.action(.wifi).commands, ["wifi --list", "wifi --get", "wifi --properties"])
+        XCTAssertEqual(DiagsQuickAction.action(.bluetooth).commands, ["bluetooth --list", "bluetooth --properties"])
         XCTAssertEqual(DiagsQuickAction.action(.readSerial).risk, .readOnly, "bare `sn` only reads")
         XCTAssertEqual(DiagsQuickAction.action(.sysCfgList).risk, .readOnly)
         XCTAssertEqual(DiagsQuickAction.action(.ledOn).risk, .changesState)
         XCTAssertEqual(DiagsQuickAction.action(.systemInfo).commands, ["sysinfo", "version", "boardid", "boardrev", "chipid"])
         XCTAssertTrue(DiagsQuickAction.action(.sensors).help.contains("temperature"))
-        XCTAssertEqual(DiagsQuickAction.categories, [.deviceInfo, .sysCfg, .nand, .audio, .sensor, .radio, .led])
+        XCTAssertEqual(DiagsQuickAction.categories,
+                       [.deviceInfo, .factoryHistory, .sysCfg, .nand, .storage, .memory, .audio, .sensor, .power, .radio, .led])
     }
+
+    func testNewQuickActions() {
+        func commands(_ kind: DiagsQuickAction.Kind) -> [String] { DiagsQuickAction.action(kind).commands }
+        XCTAssertEqual(commands(.system), ["system"])
+        XCTAssertEqual(commands(.socInfo), ["soc"])
+        XCTAssertEqual(commands(.bootConfig), ["bootcfg"])
+        XCTAssertEqual(commands(.controlBits), ["cbreadall"])
+        XCTAssertEqual(commands(.controlBitDump), ["cbdump"])
+        XCTAssertEqual(commands(.pmuEvents), ["pmuevent all"])
+        XCTAssertEqual(commands(.pmuADC), ["help pmuadc"], "the ADC's arguments aren't known: ask, don't guess")
+        XCTAssertEqual(commands(.pmuRegisters), ["pmureg"])
+        XCTAssertEqual(commands(.buckCheck), ["buckcheck"])
+        XCTAssertEqual(commands(.rtc), ["rtc --get"])
+        XCTAssertEqual(commands(.nandTests), ["nand --testlist"])
+        XCTAssertEqual(commands(.nandParams), ["nand --getinfo"])
+        XCTAssertEqual(commands(.memoryInfo), ["memory --info", "memory --list"])
+        XCTAssertEqual(commands(.memoryMap), ["dumpmemmap"])
+        XCTAssertEqual(commands(.filesystem), ["dir fs0:", "dir nandfs:"])
+        XCTAssertEqual(commands(.nvram), ["nvram -p"])
+        XCTAssertEqual(commands(.ledRed), ["strobe -c led -s All_RGB --set red 25"])
+        XCTAssertEqual(commands(.ledGreen), ["strobe -c led -s All_RGB --set green 25"])
+        XCTAssertEqual(commands(.ledBlue), ["strobe -c led -s All_RGB --set blue 25"])
+        XCTAssertEqual(commands(.ledWhite), ["strobe -c led -s All_RGB --set red 25",
+                                             "strobe -c led -s All_RGB --set green 25",
+                                             "strobe -c led -s All_RGB --set blue 25"])
+
+        // Everything new only reads, except the LED colours (live state).
+        let ledColours: [DiagsQuickAction.Kind] = [.ledRed, .ledGreen, .ledBlue, .ledWhite]
+        let readOnly: [DiagsQuickAction.Kind] = [.system, .socInfo, .bootConfig, .controlBits, .controlBitDump,
+                                                 .pmuEvents, .pmuADC, .pmuRegisters, .buckCheck, .rtc,
+                                                 .nandTests, .nandParams, .memoryInfo, .memoryMap, .filesystem, .nvram]
+        for kind in readOnly { XCTAssertEqual(DiagsQuickAction.action(kind).risk, .readOnly, kind.rawValue) }
+        for kind in ledColours { XCTAssertEqual(DiagsQuickAction.action(kind).risk, .changesState, kind.rawValue) }
+
+        XCTAssertEqual(DiagsQuickAction.actions(in: .factoryHistory).map(\.kind), [.controlBits, .controlBitDump])
+        XCTAssertEqual(DiagsQuickAction.actions(in: .power).map(\.kind), [.pmuEvents, .pmuADC, .pmuRegisters, .buckCheck, .rtc])
+        XCTAssertEqual(DiagsQuickAction.actions(in: .memory).map(\.kind), [.memoryInfo, .memoryMap])
+        XCTAssertEqual(DiagsQuickAction.actions(in: .storage).map(\.kind), [.filesystem, .nvram])
+        XCTAssertEqual(DiagsQuickAction.actions(in: .led).map(\.kind), [.ledOn, .ledOff, .ledRed, .ledGreen, .ledBlue, .ledWhite])
+        XCTAssertEqual(DiagsQuickAction.actions(in: .deviceInfo).map(\.kind), [.systemInfo, .system, .socInfo, .bootConfig])
+        XCTAssertTrue(DiagsQuickAction.action(.controlBits).isSlow, "256 stations of output")
+        XCTAssertTrue(DiagsQuickAction.action(.nvram).help.contains("help nvram"))
+
+        // Confirmed on real hardware.
+        for name in ["cbreadall", "strobe", "system", "device"] {
+            XCTAssertEqual(DiagsCommandReference.command(named: name)?.source, .benchTested, name)
+        }
+    }
+
+    // MARK: Model reconfiguration (colour swap)
+
+    func testModelVariants() {
+        XCTAssertEqual(HomePodModelVariant.variant(for: "MQHW2"), .spaceGray)
+        XCTAssertEqual(HomePodModelVariant.variant(for: "MQHV2LL/A"), .white)
+        XCTAssertEqual(HomePodModelVariant.variant(for: " mqhw2x/a "), .spaceGray)
+        XCTAssertNil(HomePodModelVariant.variant(for: "MQJ83"))
+        XCTAssertNil(HomePodModelVariant.variant(for: ""))
+
+        XCTAssertEqual(HomePodModelVariant.remodel("MQHW2", to: .white), "MQHV2")
+        XCTAssertEqual(HomePodModelVariant.remodel("MQHV2", to: .spaceGray), "MQHW2")
+        XCTAssertEqual(HomePodModelVariant.remodel("MQHW2LL/A", to: .white), "MQHV2LL/A", "the region suffix is kept")
+        XCTAssertEqual(HomePodModelVariant.remodel("MQHW2X/A", to: .white), "MQHV2X/A")
+        XCTAssertEqual(HomePodModelVariant.remodel("MQHW2", to: .spaceGray), "MQHW2")
+        XCTAssertEqual(HomePodModelVariant.remodel("ZZZZ9", to: .white), "MQHV2", "an unknown model gives the bare target")
+        XCTAssertEqual(HomePodModelVariant.remodel("", to: .spaceGray), "MQHW2")
+        XCTAssertEqual(HomePodModelVariant.all.map(\.color), ["Space Gray", "White"])
+    }
+
+    func testModelValidationAndCommands() throws {
+        XCTAssertEqual(try DiagsSerialSession.validatedModelNumber(" MQHV2 "), "MQHV2")
+        XCTAssertEqual(try DiagsSerialSession.validatedModelNumber("MQHV2LL/A"), "MQHV2LL/A")
+        for bad in ["", "MQ", "MQHV2 LL/A", "MQHV2\nsyscfg init", "MQHV2;sn", "MQHV2LL/AMQHV2LL/A"] {
+            XCTAssertThrowsError(try DiagsSerialSession.validatedModelNumber(bad), bad) { error in
+                guard case .invalidModel = error as? DiagsSerialError else { return XCTFail("\(error)") }
+            }
+            XCTAssertThrowsError(try DiagsSerialSession.modelReconfigureCommands(to: bad), bad)
+        }
+        let commands = try DiagsSerialSession.modelReconfigureCommands(to: "MQHV2")
+        XCTAssertEqual(commands, ["syscfg delete Mod#", "syscfg add Mod# MQHV2", "syscfg print Mod#"])
+        XCTAssertEqual(commands.map { DiagsCommandReference.risk(ofLine: $0) }, [.writesFlash, .writesFlash, .readOnly])
+        for line in commands { XCTAssertNoThrow(try DiagsSerialSession.validatedCommand(line)) }
+        XCTAssertTrue(DiagsSerialSession.isSysCfgKey(DiagsSerialSession.modelKey))
+    }
+
+    func testReconfigureModel() throws {
+        let shell = try FakeDiagsShell()
+        shell.replies["syscfg delete Mod#"] = "Exit code = 0x00000000\r\n"
+        shell.replies["syscfg add Mod# MQHV2"] = "Exit code = 0x00000000\r\n"
+        shell.replies["syscfg print Mod#"] = "Key: Mod# = MQHV2\r\nExit code = 0x00000000\r\n"
+        shell.replies["syscfg add Mod# MQHW2"] = "Exit code = 0x00000000\r\n"
+        let session = try connect(shell)
+        defer { session.port.close(); shell.unplug() }
+
+        XCTAssertEqual(try session.reconfigureModel(to: " MQHV2 "), "MQHV2")
+        XCTAssertEqual(shell.commands, ["syscfg delete Mod#", "syscfg add Mod# MQHV2", "syscfg print Mod#"])
+
+        // A model that isn't valid sends nothing at all — above all, no delete.
+        XCTAssertThrowsError(try session.reconfigureModel(to: "MQHV2 LL/A"))
+        XCTAssertEqual(shell.commands.count, 3)
+
+        // The read-back is the proof: the fake still answers MQHV2.
+        XCTAssertThrowsError(try session.reconfigureModel(to: "MQHW2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError, .modelNotVerified(expected: "MQHW2", found: "MQHV2"))
+        }
+    }
+
+    func testVerifiedModel() throws {
+        func result(_ command: String, _ output: String) -> DiagsCommandResult {
+            DiagsSerialSession.result(command: command, rawOutput: command + "\r\n" + output + "\r\n[AB] :-) ")
+        }
+        let delete = result("syscfg delete Mod#", "ERROR: key not found")   // never set: allowed to complain
+        let add = result("syscfg add Mod# MQHW2", "")
+        XCTAssertEqual(try DiagsSerialSession.verifiedModel(from: [delete, add, result("syscfg print Mod#", "MQHW2")], expected: "MQHW2"), "MQHW2")
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: [delete, add, result("syscfg print Mod#", "ERROR: not found")], expected: "MQHW2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError, .modelNotVerified(expected: "MQHW2", found: ""))
+        }
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: [delete, add], expected: "MQHW2"))
+    }
+
 
     func testPortHelpers() throws {
         XCTAssertTrue(SerialPort.lastLine(of: Array("a\nb :-) ".utf8), contains: Array(":-)".utf8)))
@@ -485,8 +622,8 @@ final class DiagsSerialTests: XCTestCase {
                        "> sysinfo\nBoard: b238aap\n\n> version\nDiags 1.0\n\n> boardid\n0x38\n\n> boardrev\n0x5\n\n> chipid")
         // A command that errors doesn't stop the ones after it.
         let nand = try session.readNANDInfo()
-        XCTAssertTrue(nand.hasPrefix("> nand\nERROR: unknown command 'nand'"))
+        XCTAssertTrue(nand.hasPrefix("> nandcsid\nERROR: unknown command 'nandcsid'"))
         XCTAssertTrue(nand.contains("> nanduid"))
-        XCTAssertEqual(shell.commands, ["sysinfo", "version", "boardid", "boardrev", "chipid", "nand", "nandcsid", "NANDInfoTool", "nanduid"])
+        XCTAssertEqual(shell.commands, ["sysinfo", "version", "boardid", "boardrev", "chipid", "nandcsid", "nandppnfwver", "nanduid", "blockdevice"])
     }
 }

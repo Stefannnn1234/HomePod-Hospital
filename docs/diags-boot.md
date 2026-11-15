@@ -122,7 +122,24 @@ The DIAGS shell includes factory test commands:
 - `audio`, `playaudio`, `recordaudio`, `loopaudio` — audio testing
 - `wifi`, `bluetooth` — radio testing
 - `sensor`, `temperature` — hardware sensors
-- `nand`, `nandcsid`, `nanduid`, `NANDInfoTool` — NAND diagnostics
+- `nandcsid`, `nandppnfwver`, `nanduid` — NAND diagnostics (safe reads; bare `nand` only prints `ERROR: No arguments`)
+- **`NANDInfoTool` — DO NOT RUN.** It panics DIAGS (null-pointer dereference in `TestNand.macho`,
+  Translation Fault Level 1) and the pod reboots into DFU.
+- `help <command>` — prints a command's usage. `temperature`, `sensor`, `wifi`, `bluetooth`,
+  `playaudio` and `recordaudio` all need arguments and only print a usage error when typed bare.
+- `playaudio` — tone / file playback. From `help playaudio` and `playaudio --listcaps` on a real unit:
+  - `playaudio [-b block] [-p port] [-o|--listcaps] [-d 8|16|24|32] [-r rateHz] [-c channels]
+    [-t freqHz] [-l lenMs] [-f file] [-u buffer] [-a|--async]`
+  - `socmca` is the only block marked playable (8–96 kHz, 8/16/24/32-bit, async). `ampcontroller`,
+    `codec0` and `codec1` are 48 kHz / 16-bit only, so tones are generated at `-r 48000 -d 16`.
+  - Without `--async` the command blocks until the sound ends; `stopaudio` ends an `--async` session.
+  - The app's tone buttons send `ampcontroller --init`, then
+    `playaudio -b socmca -t <Hz> -l <ms> -r 48000 -d 16` (Test Tone: 1 kHz for 3 s; Tone Sweep:
+    100 Hz, 500 Hz, 1 kHz, 2 kHz, 5 kHz, 10 kHz at 1.5 s each, about 9 s — a seal check: weak or
+    rattling bass at 100 Hz means the enclosure leaks).
+  - **Not yet confirmed to play.** Port names have not been captured and bare `playaudio` says both
+    a block and a port are required, so these port-less lines may only print an error naming the
+    port. Record what the shell answers here once they have been run.
 - `strobe` — LED control
 - `pmustat`, `pmutemp`, `pmureg` — power management
 - `sysinfo`, `system`, `version` — system information

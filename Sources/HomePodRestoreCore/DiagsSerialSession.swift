@@ -99,6 +99,7 @@ public struct SysCfgEntry: Sendable, Equatable, Identifiable {
         "WFEQ": "Woofer EQ calibration",
         "LEDc": "LED calibration",
         "LSCI": "Light sensor calibration",
+        "DClr": "Device colour",
     ]
 }
 
@@ -110,6 +111,10 @@ public enum DiagsSerialError: Error, Equatable, LocalizedError {
     case invalidKey(String)
     /// A SysCfg value that is empty or contains control characters.
     case invalidValue
+    /// Not something that can be written as a model number (`Mod#`).
+    case invalidModel(String)
+    /// The model number was written, but reading `Mod#` back didn't give it.
+    case modelNotVerified(expected: String, found: String)
     /// The shell never printed its prompt.
     case noPrompt(partial: String)
     /// The command started but its prompt never came back.
@@ -125,6 +130,14 @@ public enum DiagsSerialError: Error, Equatable, LocalizedError {
             return "\"\(key)\" isn't a SysCfg key. Keys are exactly four characters, like SrNm or MLB#."
         case .invalidValue:
             return "Enter a value (plain text, on one line)."
+        case .invalidModel(let model):
+            return model.isEmpty
+                ? "Enter a model number, like MQHW2."
+                : "\"\(model)\" can't be written as a model number. Use 4 to 16 letters, digits, \"/\" or \"-\", with no spaces — like MQHW2 or MQHV2LL/A."
+        case .modelNotVerified(let expected, let found):
+            return found.isEmpty
+                ? "Mod# did not read back after the write (expected \(expected)). The key may now be missing — check the output and write it again."
+                : "Mod# read back as \"\(found)\", not \(expected). Check the output and write it again."
         case .noPrompt:
             return "No DIAGS prompt. Check that the pod has booted into Factory DIAGS, that this is the right serial port, and that the adapter's TX/RX aren't swapped."
         case .commandTimedOut(let command, _):
@@ -259,10 +272,73 @@ public final class DiagsSerialSession: @unchecked Sendable {
         return try runCommand("syscfg add \(key) \(value)", timeout: longCommandTimeout)
     }
 
+    /// `syscfg delete <key>`. WRITES FLASH.
+    public func syscfgDelete(_ key: String) throws -> DiagsCommandResult {
+        let key = try Self.validatedKey(key)
+        return try runCommand("syscfg delete \(key)", timeout: longCommandTimeout)
+    }
+
     /// `syscfg init` — creates an EMPTY SysCfg. WRITES FLASH and erases the
     /// identity and calibration of a working unit.
     public func syscfgInit() throws -> DiagsCommandResult {
         try runCommand("syscfg init", timeout: longCommandTimeout)
+    }
+
+    // MARK: Model reconfiguration (colour swap)
+    //
+    // A 1st-gen HomePod's colour is its model number: MQHW2 (Space Gray) or
+    // MQHV2 (White) — see `HomePodModelVariant`. Changing it is three lines:
+    // delete the key, add it with the new value, read it back.
+
+    /// The SysCfg key that holds the model number.
+    public static let modelKey = "Mod#"
+
+    /// A model number that is safe to put on a `syscfg add` line: 4 to 16
+    /// letters, digits, "/" or "-". No spaces — a space would split it into
+    /// two arguments.
+    public static func validatedModelNumber(_ model: String) throws -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespaces)
+        let allowed = trimmed.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
+                || byte == 0x2F || byte == 0x2D
+        }
+        guard (4...16).contains(trimmed.utf8.count), allowed else { throw DiagsSerialError.invalidModel(trimmed) }
+        return trimmed
+    }
+
+    /// The three lines that change the model number, in order. WRITE FLASH.
+    /// Throws before anything is sent when `newModel` isn't a model number.
+    public static func modelReconfigureCommands(to newModel: String) throws -> [String] {
+        let model = try validatedModelNumber(newModel)
+        return ["syscfg delete \(modelKey)", "syscfg add \(modelKey) \(model)", "syscfg print \(modelKey)"]
+    }
+
+    /// The model number read back by the last of `modelReconfigureCommands`.
+    /// Throws `.modelNotVerified` unless it is exactly `expected` — the
+    /// read-back is the proof, whatever the delete and add lines printed (the
+    /// delete of a key that was never set is allowed to complain).
+    public static func verifiedModel(from results: [DiagsCommandResult], expected: String) throws -> String {
+        let expected = try validatedModelNumber(expected)
+        guard results.count == 3, !results[2].hasError else {
+            throw DiagsSerialError.modelNotVerified(expected: expected, found: "")
+        }
+        let found = valueFromPrint(results[2].cleanOutput, key: modelKey)
+        guard found == expected else {
+            throw DiagsSerialError.modelNotVerified(expected: expected, found: String(found.prefix(80)))
+        }
+        return found
+    }
+
+    /// Changes the unit's model number (`Mod#`) — and with it the colour the
+    /// system reports. WRITES FLASH. Sends `syscfg delete Mod#`,
+    /// `syscfg add Mod# <newModel>` and `syscfg print Mod#`, and returns the
+    /// value read back. Throws `.modelNotVerified` when the read-back isn't
+    /// the new model.
+    @discardableResult
+    public func reconfigureModel(to newModel: String) throws -> String {
+        let commands = try Self.modelReconfigureCommands(to: newModel)
+        let results = try runCommands(commands, timeout: longCommandTimeout)
+        return try Self.verifiedModel(from: results, expected: newModel)
     }
 
     // MARK: Grouped readings
@@ -273,11 +349,17 @@ public final class DiagsSerialSession: @unchecked Sendable {
     public func readSystemInfo() throws -> String { try transcript(.systemInfo) }
     public func readNANDInfo() throws -> String { try transcript(.nandHealth) }
     public func readSensorData() throws -> String { try transcript(.sensors) }
-    /// Initialises the amp controller — the first step of an audio test. The
-    /// audible parts (`playaudio`, `recordaudio`, `stopaudio`) are separate
-    /// actions so the tech can listen in between.
+    /// Initialises the amp controller — the first step of an audio test.
+    /// Bare `playaudio` / `recordaudio` are not sent by any action: they only
+    /// answer "Both Blockname and Portnames have to be provided!".
     public func runAudioTest() throws -> String { try transcript(.audioInit) }
+    /// Amp init, then a 1 kHz tone for 3 s. Blocks until the tone has ended.
+    /// Amp init, then the 100 Hz – 10 kHz tone sweep (about 9 s in all).
+    /// `stopaudio` — ends an `--async` play / record session.
+    /// The Wi-Fi command's usage (`help wifi`). Bare `wifi` only answers
+    /// "No option specified", and no read-only option has been captured yet.
     public func runWiFiTest() throws -> String { try transcript(.wifi) }
+    /// The Bluetooth command's usage (`help bluetooth`), for the same reason.
     public func runBluetoothTest() throws -> String { try transcript(.bluetooth) }
 
     private func transcript(_ kind: DiagsQuickAction.Kind) throws -> String {
@@ -460,7 +542,7 @@ public final class DiagsSerialSession: @unchecked Sendable {
 
     /// The value part of `syscfg print KEY` output. DIAGS may print just the
     /// value or a `Key: KEY = value` line; either way the value comes back.
-    static func valueFromPrint(_ clean: String, key: String) -> String {
+    public static func valueFromPrint(_ clean: String, key: String) -> String {
         if let entry = parseSysCfgList(clean).first(where: { $0.key == key }) { return entry.value }
         return clean.split(separator: "\n")
             .filter { !$0.contains("Exit code") }
@@ -539,12 +621,52 @@ public final class DiagsSerialSession: @unchecked Sendable {
 // The button-driven DIAGS screen runs these. Labels, grouping and risk come
 // from `DiagsCommandReference`, so the screen and the reference card can't
 // drift apart; only the command lines themselves live here.
+//
+// Every line here goes to a real HomePod, so the rule is: only lines that have
+// been run on a real unit, or that appear verbatim in Apple's factory scripts.
+// Where a command's arguments aren't known the button sends `help <command>`
+// instead of guessing — a wrong guess costs the tech a reboot.
+//
+// The one exception is the tone buttons (Test Tone, Tone Sweep). Their
+// `playaudio` lines are built from the `help playaudio` text and the
+// `--listcaps` output of a real unit, but had NOT been played on one when they
+// were added. They name the playable block (socmca) and no port: the port
+// names haven't been captured, and the shell's own error is expected to say
+// whether one is needed. Once a line has played on a real unit, add the port
+// in `DiagsCommandReference.toneLine` if it wants one and drop this paragraph.
+//
+// The second exception is NVRAM: `nvram -p` is a guess at the print option and
+// is labelled as one on the button. If it turns out wrong, change the line to
+// `help nvram`.
+//
+// No button writes flash. Changing the model number (colour) writes SysCfg, so
+// it goes through its own sheet — `reconfigureModel(to:)` above — like the
+// SysCfg write form.
+//
+// NEVER add `NANDInfoTool`: it panics DIAGS (null-pointer dereference in
+// TestNand.macho) and the pod drops to DFU. Bare `nand`, `temperature`,
+// `sensor`, `wifi`, `bluetooth`, `playaudio` and `recordaudio` only print a
+// usage error, so they aren't sent either.
 
 public struct DiagsQuickAction: Sendable, Equatable, Identifiable {
     public enum Kind: String, Sendable, CaseIterable, Identifiable {
         case systemInfo, sysCfgList, readSerial, nandHealth
-        case audioInit, audioPlay, audioRecord, audioStop
+        case audioInit, audioInfo, audioHelp
         case sensors, wifi, bluetooth, ledOn, ledOff
+        // Device info
+        case system, socInfo, bootConfig
+        // Factory history
+        case controlBits, controlBitDump
+        // Power / PMU
+        case pmuEvents, pmuADC, pmuRegisters, buckCheck, rtc
+        // NAND
+        case nandTests, nandParams
+        // Memory
+        case memoryInfo, memoryMap
+        // Storage
+        case filesystem, nvram
+        // LED colours
+        case ledRed, ledGreen, ledBlue, ledWhite
         public var id: String { rawValue }
     }
 
@@ -568,22 +690,59 @@ public struct DiagsQuickAction: Sendable, Equatable, Identifiable {
             .max { Self.rank($0) < Self.rank($1) } ?? .unknown
     }
 
-    /// Prints a lot or works for a while — gets the long timeout.
+    /// Prints a lot or works for a while — gets the long timeout. The tone
+    /// actions are here because a synchronous `playaudio` prints nothing until
+    /// its tone has ended (3 s at most), and the timeout is an idle timeout.
     public var isSlow: Bool {
         switch kind {
-        case .sysCfgList, .nandHealth, .audioInit, .audioPlay, .audioRecord, .wifi, .bluetooth: return true
+        case .sysCfgList, .nandHealth, .audioInit, .audioInfo, .audioHelp,
+             .sensors, .wifi, .bluetooth: return true
+        // Long print-outs: 256 control-bit stations, register and memory dumps.
+        case .controlBits, .controlBitDump, .pmuEvents, .pmuADC, .pmuRegisters, .buckCheck,
+             .nandTests, .nandParams, .memoryInfo, .memoryMap, .filesystem, .nvram: return true
         default: return false
         }
     }
 
-    /// One line per command: what the reference says it does.
+    /// Makes sound, or stops it. The screen shows these as their own row of
+    /// the Audio group, apart from the bring-up and read-out buttons.
+    public var isAudioPlayback: Bool {
+        switch kind {
+        default: return false
+        }
+    }
+
+    /// What the button does that the per-command summaries don't say.
+    public var note: String? {
+        switch kind {
+        case .controlBits:
+            return "The unit's factory test-station history: which stations it passed. Long output (256 stations) — scroll, or save it."
+        case .pmuEvents:
+            return "Latched PMU fault and voltage events — the first thing to read on a board that won't stay up."
+        case .pmuADC:
+            return "Sends `help pmuadc`: the channel arguments haven't been captured yet, so this prints the usage instead of guessing."
+        case .nandTests:
+            return "Lists the available NAND tests. It does not run any of them."
+        case .nvram:
+            return "`nvram -p` is a guess at the print option. If it errors, type `help nvram`."
+        case .ledGreen:
+            return "Same pattern as red and blue, which are confirmed on a real unit; green itself isn't yet."
+        case .ledWhite:
+            return "Sets red, green and blue one after another, which mixes to white."
+        default:
+            return nil
+        }
+    }
+
+    /// The button's own note (if any), then one line per command: what the
+    /// reference says it does.
     public var help: String {
         var seen = Set<String>()
         let lines = commands.compactMap { line -> String? in
             guard let command = DiagsCommandReference.command(forLine: line), seen.insert(command.name).inserted else { return nil }
             return "\(command.name) — \(command.summary)"
         }
-        return (lines + ["Risk: \(risk.title)"]).joined(separator: "\n")
+        return ((note.map { [$0] } ?? []) + lines + ["Risk: \(risk.title)"]).joined(separator: "\n")
     }
 
     static func rank(_ risk: DiagsCommand.Risk) -> Int {
@@ -592,37 +751,90 @@ public struct DiagsQuickAction: Sendable, Equatable, Identifiable {
         case .changesState: return 1
         case .unknown: return 2
         case .writesFlash: return 3
+        case .crashesDevice: return 4
         }
     }
 
     public static let all: [DiagsQuickAction] = [
         DiagsQuickAction(kind: .systemInfo, title: "System Info", symbol: "info.circle", category: .deviceInfo,
                          commands: ["sysinfo", "version", "boardid", "boardrev", "chipid"]),
+        DiagsQuickAction(kind: .system, title: "System", symbol: "hifispeaker.fill", category: .deviceInfo,
+                         commands: ["system"]),
+        DiagsQuickAction(kind: .socInfo, title: "SoC Info", symbol: "cpu", category: .deviceInfo,
+                         commands: ["soc"]),
+        DiagsQuickAction(kind: .bootConfig, title: "Boot Config", symbol: "gearshape.2", category: .deviceInfo,
+                         commands: ["bootcfg"]),
+        DiagsQuickAction(kind: .controlBits, title: "Control Bits", symbol: "checklist", category: .factoryHistory,
+                         commands: ["cbreadall"]),
+        DiagsQuickAction(kind: .controlBitDump, title: "Control Bit Dump", symbol: "doc.plaintext", category: .factoryHistory,
+                         commands: ["cbdump"]),
         DiagsQuickAction(kind: .sysCfgList, title: "SysCfg List", symbol: "list.bullet.rectangle", category: .sysCfg,
                          commands: ["syscfg list"]),
         DiagsQuickAction(kind: .readSerial, title: "Read Serial", symbol: "number", category: .sysCfg,
                          commands: ["sn"]),
         DiagsQuickAction(kind: .nandHealth, title: "NAND Health", symbol: "internaldrive", category: .nand,
-                         commands: ["nand", "nandcsid", "NANDInfoTool", "nanduid"]),
-        DiagsQuickAction(kind: .audioInit, title: "Audio Test", symbol: "hifispeaker", category: .audio,
+                         commands: ["nandcsid", "nandppnfwver", "nanduid", "blockdevice"]),
+        // `--testlist` only lists the tests; nothing here runs one.
+        DiagsQuickAction(kind: .nandTests, title: "NAND Tests", symbol: "list.bullet.clipboard", category: .nand,
+                         commands: ["nand --testlist"]),
+        DiagsQuickAction(kind: .nandParams, title: "NAND Params", symbol: "slider.horizontal.3", category: .nand,
+                         commands: ["nand --getinfo"]),
+        DiagsQuickAction(kind: .filesystem, title: "Filesystem", symbol: "folder", category: .storage,
+                         commands: ["dir fs0:", "dir nandfs:"]),
+        DiagsQuickAction(kind: .nvram, title: "NVRAM", symbol: "tray.full", category: .storage,
+                         commands: ["nvram -p"]),
+        DiagsQuickAction(kind: .memoryInfo, title: "Memory Info", symbol: "memorychip", category: .memory,
+                         commands: ["memory --info", "memory --list"]),
+        DiagsQuickAction(kind: .memoryMap, title: "Memory Map", symbol: "map", category: .memory,
+                         commands: ["dumpmemmap"]),
+        DiagsQuickAction(kind: .audioInit, title: "Amp Init", symbol: "hifispeaker", category: .audio,
                          commands: ["ampcontroller --init"]),
-        DiagsQuickAction(kind: .audioPlay, title: "Play", symbol: "play.fill", category: .audio,
-                         commands: ["playaudio"]),
-        DiagsQuickAction(kind: .audioRecord, title: "Record", symbol: "mic.fill", category: .audio,
-                         commands: ["recordaudio"]),
-        DiagsQuickAction(kind: .audioStop, title: "Stop", symbol: "stop.fill", category: .audio,
-                         commands: ["stopaudio"]),
+        DiagsQuickAction(kind: .audioInfo, title: "Volume & Audio Caps", symbol: "speaker.wave.2", category: .audio,
+                         commands: ["getvol", "playaudio --listcaps"]),
+        DiagsQuickAction(kind: .audioHelp, title: "Play/Record Help", symbol: "questionmark.circle", category: .audio,
+                         commands: ["help playaudio", "help recordaudio"]),
+        // pmutemp first: it is the one confirmed on a real unit. The next two
+        // are verbatim from Apple's sochot.sh; `pmustat all` is unconfirmed.
         DiagsQuickAction(kind: .sensors, title: "Thermal/Sensors", symbol: "thermometer", category: .sensor,
-                         commands: ["temperature", "sensor", "pmutemp"]),
-        DiagsQuickAction(kind: .wifi, title: "WiFi Test", symbol: "wifi", category: .radio,
-                         commands: ["wifi"]),
-        DiagsQuickAction(kind: .bluetooth, title: "Bluetooth Test", symbol: "dot.radiowaves.left.and.right", category: .radio,
-                         commands: ["bluetooth"]),
+                         commands: ["pmutemp", "temperature --all", "sensor -s touch --get temp", "pmustat all"]),
+        DiagsQuickAction(kind: .pmuEvents, title: "PMU Events", symbol: "exclamationmark.triangle", category: .power,
+                         commands: ["pmuevent all"]),
+        // The ADC's channel arguments aren't known yet: ask the shell.
+        DiagsQuickAction(kind: .pmuADC, title: "PMU ADC", symbol: "gauge", category: .power,
+                         commands: ["help pmuadc"]),
+        DiagsQuickAction(kind: .pmuRegisters, title: "PMU Registers", symbol: "tablecells", category: .power,
+                         commands: ["pmureg"]),
+        DiagsQuickAction(kind: .buckCheck, title: "Buck Check", symbol: "bolt", category: .power,
+                         commands: ["buckcheck"]),
+        DiagsQuickAction(kind: .rtc, title: "RTC", symbol: "clock", category: .power,
+                         commands: ["rtc --get"]),
+        DiagsQuickAction(kind: .wifi, title: "WiFi Info", symbol: "wifi", category: .radio,
+                         commands: ["wifi --list", "wifi --get", "wifi --properties"]),
+        DiagsQuickAction(kind: .bluetooth, title: "Bluetooth Info", symbol: "dot.radiowaves.left.and.right", category: .radio,
+                         commands: ["bluetooth --list", "bluetooth --properties"]),
         DiagsQuickAction(kind: .ledOn, title: "LED On", symbol: "lightbulb.fill", category: .led,
                          commands: ["strobe -c led --power on"]),
         DiagsQuickAction(kind: .ledOff, title: "LED Off", symbol: "lightbulb.slash", category: .led,
                          commands: ["strobe -c led --power off"]),
+        // Red and blue are confirmed on a real unit; green follows the pattern.
+        DiagsQuickAction(kind: .ledRed, title: "LED Red", symbol: "r.circle.fill", category: .led,
+                         commands: [ledColorLine("red")]),
+        DiagsQuickAction(kind: .ledGreen, title: "LED Green", symbol: "g.circle.fill", category: .led,
+                         commands: [ledColorLine("green")]),
+        DiagsQuickAction(kind: .ledBlue, title: "LED Blue", symbol: "b.circle.fill", category: .led,
+                         commands: [ledColorLine("blue")]),
+        // All three channels on = white.
+        DiagsQuickAction(kind: .ledWhite, title: "LED White", symbol: "w.circle.fill", category: .led,
+                         commands: [ledColorLine("red"), ledColorLine("green"), ledColorLine("blue")]),
     ]
+
+    /// Brightness level the LED colour buttons use (the one confirmed on a real unit).
+    public static let ledLevel = 25
+
+    /// `strobe -c led -s All_RGB --set <colour> 25`
+    static func ledColorLine(_ colour: String) -> String {
+        "strobe -c led -s All_RGB --set \(colour) \(ledLevel)"
+    }
 
     public static func action(_ kind: Kind) -> DiagsQuickAction {
         // `all` covers every kind (checked by a unit test).

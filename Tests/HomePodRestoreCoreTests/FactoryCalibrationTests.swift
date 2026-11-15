@@ -471,7 +471,10 @@ final class FactoryCalibrationTests: XCTestCase {
         let wanted = ["syscfg", "sn", "audio", "playaudio", "recordaudio", "loopaudio", "stopaudio", "wifi", "bluetooth",
                       "nand", "nandcsid", "nanduid", "NANDInfoTool", "nandsize", "sensor", "temperature", "thermalmonitor",
                       "ampcontroller", "strobe", "button", "buttoncnt", "key", "mbt", "pmuadc", "pmutemp", "pmustat", "pmureg",
-                      "sysinfo", "system", "version", "chipid", "boardid", "boardrev", "blockdevice"]
+                      "sysinfo", "system", "version", "chipid", "boardid", "boardrev", "blockdevice",
+                      "nandppnfwver", "spkid", "getvol", "setvol", "help",
+                      "soc", "bootcfg", "device", "cbreadall", "cbdump", "pmuevent", "buckcheck", "rtc",
+                      "memory", "dumpmemmap", "dir", "nvram"]
         for name in wanted { XCTAssertNotNil(DiagsCommandReference.command(named: name), name) }
         let names = DiagsCommandReference.all.map(\.name)
         XCTAssertEqual(Set(names).count, names.count, "command names are unique")
@@ -531,7 +534,34 @@ final class FactoryCalibrationTests: XCTestCase {
         XCTAssertEqual(DiagsCommandReference.risk(ofLine: "temperature --all"), .readOnly)
         XCTAssertEqual(DiagsCommandReference.risk(ofLine: "audio -b codec0"), .changesState)
         XCTAssertEqual(DiagsCommandReference.risk(ofLine: "nanduid"), .readOnly)
-        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "pmureg"), .unknown)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "pmureg"), .readOnly, "bare, it dumps every register")
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "pmureg 0x10 0x01"), .unknown, "with arguments it may write")
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "nand --testlist"), .readOnly, "lists the tests, runs none")
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "nand --getinfo"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "nand --test 3"), .unknown, "a NAND test may write")
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "nvram -p"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "nvram boot-args=x"), .unknown)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "device -l"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "cbreadall"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "pmuevent all"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "dir nandfs:"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "strobe -c led -s All_RGB --set blue 25"), .changesState)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "syscfg delete Mod#"), .writesFlash)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "NANDInfoTool"), .crashesDevice, "panics DIAGS on a real unit")
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "nandinfotool"), .crashesDevice)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "ampcontroller --init"), .changesState)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "ampcontroller -s [TEMP]"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "playaudio --listcaps"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "playaudio -o"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "playaudio"), .changesState)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "playaudio -b socmca -t 1000 -l 3000 -r 48000 -d 16"), .changesState)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "playaudio -b socmca -o -t 1000"), .changesState, "only a bare --listcaps is a read")
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "stopaudio"), .changesState)
+        XCTAssertEqual(DiagsCommandReference.toneLine(hz: 1000, ms: 3000), "playaudio -b socmca -p ap-mca3 -t 1000 -l 3000 -r 48000 -d 16")
+        XCTAssertEqual(DiagsCommandReference.toneLabel(100), "100 Hz")
+        XCTAssertEqual(DiagsCommandReference.toneLabel(10000), "10 kHz")
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "help wifi"), .readOnly)
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "pmutemp"), .readOnly)
         XCTAssertNil(DiagsCommandReference.risk(ofLine: "nosuchcommand"))
         XCTAssertNil(DiagsCommandReference.risk(ofLine: "   "))
     }
@@ -545,6 +575,7 @@ final class FactoryCalibrationTests: XCTestCase {
         let text = DiagsCommandReference.plainText()
         XCTAssertTrue(text.contains("== Audio =="))
         XCTAssertTrue(text.contains("syscfg  [Writes to flash]"))
+        XCTAssertTrue(text.contains("NANDInfoTool  [DANGEROUS — crashes the pod]"))
         XCTAssertTrue(text.contains("Recipe: Reset the audio chain (assembled unit)"))
         XCTAssertTrue(text.contains(DiagsCommand.usageNotCaptured))
     }

@@ -98,7 +98,7 @@ final class AppModel: ObservableObject {
     @Published var diagsError: String?
     /// The unit's ECID as printed in the DIAGS prompt.
     @Published var diagsECID: String?
-    /// "Audio Test" has initialised the amp controller on this connection.
+    /// "Amp Init" has initialised the amp controller on this connection.
     @Published var diagsAudioReady = false
     @Published var diagsLog: [DiagsLogEntry] = []
     /// Bumped on every change to `diagsLog` (drives auto-scroll).
@@ -108,6 +108,13 @@ final class AppModel: ObservableObject {
     @Published var diagsSysCfgRaw: String?
     @Published var diagsSysCfgWriteStatus: String?
     @Published var diagsSysCfgWriteFailed = false
+    /// The unit's model number (SysCfg `Mod#`) and region (`Regn`) as last
+    /// read over the DIAGS shell — shown by the Reconfigure Model sheet.
+    @Published var diagsCurrentModel: String?
+    @Published var diagsCurrentRegion: String?
+    /// Outcome of the last model reconfiguration, for the sheet.
+    @Published var diagsModelStatus: String?
+    @Published var diagsModelFailed = false
     var diagsIdleTask: Task<Void, Never>?
 
     // Settings

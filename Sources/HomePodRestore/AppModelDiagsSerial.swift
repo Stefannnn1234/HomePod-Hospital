@@ -48,6 +48,23 @@ struct DiagsLogEntry: Identifiable, Equatable {
     }
 }
 
+/// Why a model reconfiguration couldn't start, or couldn't finish.
+enum DiagsModelReconfigureError: LocalizedError {
+    /// Not connected, or another command is running.
+    case notReady
+    /// The serial connection went away part-way through.
+    case disconnected
+
+    var errorDescription: String? {
+        switch self {
+        case .notReady:
+            return "The DIAGS shell isn't ready — connect, and wait for the command that is running to finish."
+        case .disconnected:
+            return "The serial connection was lost part-way through. Reconnect and read Mod# (syscfg print Mod#) to see what was written."
+        }
+    }
+}
+
 private let diagsSerialQueue = DispatchQueue(label: "com.nicsfix.homepodrestore.diags-serial", qos: .userInitiated)
 
 /// Runs blocking serial work on the serial queue and resumes with its result.
@@ -144,6 +161,11 @@ extension AppModel {
             diagsBusy = nil
             diagsECID = nil
             diagsAudioReady = false
+            // The next unit on this cable is a different HomePod.
+            diagsCurrentModel = nil
+            diagsCurrentRegion = nil
+            diagsModelStatus = nil
+            diagsModelFailed = false
         }
         DispatchQueue.global(qos: .utility).async { session.port.close() }
     }
@@ -160,9 +182,11 @@ extension AppModel {
                 if let list = results.first {
                     self.diagsSysCfgEntries = DiagsSerialSession.parseSysCfgList(list.cleanOutput)
                     self.diagsSysCfgRaw = list.cleanOutput
+                    self.noteDiagsModelIdentityFromList()
                 }
             case .audioInit:
-                self.diagsAudioReady = true
+                // Each of these sends `ampcontroller --init` as its first line.
+                if results.first?.succeeded == true { self.diagsAudioReady = true }
             default:
                 break
             }
@@ -218,6 +242,123 @@ extension AppModel {
             // Whatever the list showed before is no longer what's on the chip.
             self.diagsSysCfgEntries = []
             self.diagsSysCfgRaw = nil
+            self.diagsCurrentModel = nil
+            self.diagsCurrentRegion = nil
+        }
+    }
+
+    // MARK: Model reconfiguration (colour swap)
+
+    /// Takes the model number and region from the last `syscfg list`, when it
+    /// has them.
+    func noteDiagsModelIdentityFromList() {
+        if let model = diagsSysCfgEntries.first(where: { $0.key == DiagsSerialSession.modelKey })?.value, !model.isEmpty {
+            diagsCurrentModel = model
+        }
+        if let region = diagsSysCfgEntries.first(where: { $0.key == "Regn" })?.value, !region.isEmpty {
+            diagsCurrentRegion = region
+        }
+    }
+
+    /// `syscfg print Mod#` and `syscfg print Regn` — only reads. Fills
+    /// `diagsCurrentModel` / `diagsCurrentRegion` for the Reconfigure Model
+    /// sheet; a key that errors (not set) leaves its value empty.
+    func readDiagsModelIdentity() {
+        let keys = [DiagsSerialSession.modelKey, "Regn"]
+        runDiagsCommands(keys.map { "syscfg print \($0)" }, label: "Read Model",
+                         timeout: diagsSession?.longCommandTimeout) { [weak self] results in
+            guard let self else { return }
+            for (key, result) in zip(keys, results) {
+                let value = result.succeeded ? DiagsSerialSession.valueFromPrint(result.cleanOutput, key: key) : ""
+                if key == DiagsSerialSession.modelKey {
+                    self.diagsCurrentModel = value.isEmpty ? nil : value
+                } else {
+                    self.diagsCurrentRegion = value.isEmpty ? nil : value
+                }
+            }
+        }
+    }
+
+    /// Changes the unit's model number (`Mod#`) — the colour the system
+    /// reports. WRITES FLASH — only called from the Reconfigure Model sheet.
+    ///
+    /// Sends `syscfg delete Mod#`, `syscfg add Mod# <newModel>` and
+    /// `syscfg print Mod#`, logging each like any other command, and returns
+    /// the model number read back. Throws when the model isn't valid (nothing
+    /// is sent), when the shell is busy or goes away, or when the read-back
+    /// isn't the new model.
+    @discardableResult
+    func reconfigureModel(to newModel: String) async throws -> String {
+        // Validates first: a bad model must fail before `syscfg delete` runs.
+        let commands = try DiagsSerialSession.modelReconfigureCommands(to: newModel)
+        guard let session = diagsSession, diagsBusy == nil else { throw DiagsModelReconfigureError.notReady }
+        let label = "Reconfigure Model"
+        let timeout = session.longCommandTimeout
+        diagsBusy = label
+        diagsError = nil
+
+        var results: [DiagsCommandResult] = []
+        for command in commands {
+            diagsBusy = "\(label) — \(command)"
+            let result: DiagsCommandResult
+            do {
+                result = try await diagsSerialWork { try session.runCommand(command, timeout: timeout) }
+            } catch {
+                if diagsSession === session {
+                    diagsFailed(error, label: label, command: command, session: session)
+                    if diagsSession === session { diagsBusy = nil }
+                }
+                throw error
+            }
+            guard diagsSession === session else { throw DiagsModelReconfigureError.disconnected }
+            results.append(result)
+            appendDiagsLog(DiagsLogEntry(date: Date(), kind: .command, label: label, command: result.command,
+                                         text: result.cleanOutput.isEmpty ? "(no output)" : result.cleanOutput,
+                                         isError: !result.succeeded))
+        }
+        diagsBusy = nil
+
+        do {
+            let model = try DiagsSerialSession.verifiedModel(from: results, expected: newModel)
+            diagsCurrentModel = model
+            // Keep the SysCfg table in step. `diagsSysCfgRaw` is left alone on
+            // purpose: it is the list as captured, i.e. the pre-change backup.
+            if let index = diagsSysCfgEntries.firstIndex(where: { $0.key == DiagsSerialSession.modelKey }) {
+                diagsSysCfgEntries[index] = SysCfgEntry(key: DiagsSerialSession.modelKey, value: model)
+            }
+            return model
+        } catch {
+            // The key was deleted first, so what is on the chip is unknown.
+            diagsCurrentModel = nil
+            throw error
+        }
+    }
+
+    /// Button entry point for the sheet: runs `reconfigureModel(to:)` and
+    /// turns its outcome into `diagsModelStatus`.
+    func reconfigureDiagsModel(to newModel: String) {
+        let previous = diagsCurrentModel
+        diagsModelStatus = nil
+        diagsModelFailed = false
+        Task {
+            do {
+                let model = try await reconfigureModel(to: newModel)
+                let colour = HomePodModelVariant.variant(for: model).map { " (\($0.color))" } ?? ""
+                diagsModelStatus = "Model number is now \(model)\(colour). Read back from the HomePod."
+                diagsModelFailed = false
+            } catch {
+                var text = error.localizedDescription
+                // A rejected model or a busy shell means nothing was sent, so
+                // there is nothing to put back.
+                var nothingSent = false
+                if let diags = error as? DiagsSerialError, case .invalidModel = diags { nothingSent = true }
+                if let own = error as? DiagsModelReconfigureError, case .notReady = own { nothingSent = true }
+                if !nothingSent, let previous, !previous.isEmpty {
+                    text += " The model number before this was \(previous)."
+                }
+                diagsModelStatus = text
+                diagsModelFailed = true
+            }
         }
     }
 
@@ -281,9 +422,9 @@ extension AppModel {
             switch diags {
             case .commandTimedOut(_, let partial), .commandCancelled(_, let partial):
                 log(partial.isEmpty ? diags.localizedDescription : partial + "\n\n" + diags.localizedDescription)
-            case .invalidCommand, .invalidKey, .invalidValue:
+            case .invalidCommand, .invalidKey, .invalidValue, .invalidModel:
                 diagsError = diags.localizedDescription
-            case .noPrompt:
+            case .noPrompt, .modelNotVerified:
                 log(diags.localizedDescription)
             }
             return
