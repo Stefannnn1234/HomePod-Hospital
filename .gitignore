@@ -1,0 +1,13 @@
+.build/
+dist/
+.swiftpm/
+*.xcodeproj
+xcuserdata/
+.DS_Store
+
+# SSH ramdisk overlay: third-party binaries, assembled locally (see folder README)
+scripts/ssh-ramdisk-overlay/*
+!scripts/ssh-ramdisk-overlay/README.md
+
+# Generic A8 APTicket (vendored from SSHRD_Script for checkm8 boot)
+scripts/apticket-0x7000.shsh

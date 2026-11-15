@@ -1,0 +1,74 @@
+--- a/gaster.c
++++ b/gaster.c
+@@ -164,6 +164,7 @@
+ 	{ 5, DER_SEQ, DER_FLAG_OPTIONAL }
+ };
+ static unsigned usb_timeout, usb_abort_timeout_min;
++static uint64_t target_ecid; /* HomePod Restore: 0 = any device */
+ static struct {
+ 	uint8_t b_len, b_descriptor_type;
+ 	uint16_t bcd_usb;
+@@ -346,6 +347,27 @@
+ 	return ret;
+ }
+ 
++/* HomePod Restore: GASTER_ECID lets several DFU devices be connected at once. */
++static char *
++get_usb_serial_number(usb_handle_t *);
++
++static bool
++usb_ecid_matches(usb_handle_t *handle) {
++	char *usb_serial_num, *ecid_str;
++	bool ret = false;
++
++	if(target_ecid == 0) {
++		return true;
++	}
++	if((usb_serial_num = get_usb_serial_number(handle)) != NULL) {
++		if((ecid_str = strstr(usb_serial_num, "ECID:")) != NULL) {
++			ret = strtoull(ecid_str + strlen("ECID:"), NULL, 16) == target_ecid;
++		}
++		free(usb_serial_num);
++	}
++	return ret;
++}
++
+ static bool
+ wait_usb_handle(usb_handle_t *handle, usb_check_cb_t usb_check_cb, void *arg) {
+ 	CFMutableDictionaryRef matching_dict;
+@@ -366,7 +388,7 @@
+ 		if(IOServiceGetMatchingServices(0, matching_dict, &iter) == kIOReturnSuccess) {
+ 			while((serv = IOIteratorNext(iter)) != IO_OBJECT_NULL) {
+ 				if(open_usb_device(serv, handle)) {
+-					if(usb_check_cb == NULL || usb_check_cb(handle, arg)) {
++					if(usb_ecid_matches(handle) && (usb_check_cb == NULL || usb_check_cb(handle, arg))) {
+ 						puts("Found the USB handle.");
+ 						ret = true;
+ 						break;
+@@ -1625,6 +1647,7 @@
+ int
+ main(int argc, char **argv) {
+ 	char *env_usb_timeout = getenv("USB_TIMEOUT"), *env_usb_abort_timeout_min = getenv("USB_ABORT_TIMEOUT_MIN");
++	char *env_ecid = getenv("GASTER_ECID");
+ 	int ret = EXIT_FAILURE;
+ 	usb_handle_t handle;
+ 
+@@ -1636,6 +1659,10 @@
+ 		usb_abort_timeout_min = 0;
+ 	}
+ 	printf("usb_abort_timeout_min: %u\n", usb_abort_timeout_min);
++	if(env_ecid != NULL && *env_ecid != '\0') {
++		target_ecid = strtoull(env_ecid, NULL, 16);
++		printf("target_ecid: 0x%016" PRIX64 "\n", target_ecid);
++	}
+ 	if(argc == 2 && strcmp(argv[1], "reset") == 0) {
+ 		if(gaster_reset(&handle)) {
+ 			ret = 0;
+@@ -1657,6 +1684,7 @@
+ 		puts("env:");
+ 		puts("USB_TIMEOUT - USB timeout in ms");
+ 		puts("USB_ABORT_TIMEOUT_MIN - USB abort timeout minimum in ms");
++		puts("GASTER_ECID - only use the DFU device with this ECID (hex, e.g. 0x001A2B3C4D5E6F70)");
+ 		puts("options:");
+ 		puts("reset - Reset DFU state");
+ 		puts("pwn - Put the device in pwned DFU mode");

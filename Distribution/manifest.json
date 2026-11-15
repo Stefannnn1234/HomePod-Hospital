@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "announcement": null,
+  "discordURL": "https://discord.gg/nicsfix",
+  "donateURL": null,
+  "latestAppVersion": "1.0.0",
+  "appDownloadURL": null,
+  "firmwares": [
+    {
+      "version": "18.3",
+      "build": "22K557",
+      "url": "https://nicsfix.com/ipsw/18.3.ipsw",
+      "size": 3431162133,
+      "sha256": "2e8d1e70dc0ab55be2864e8630553e0dedd3eb000d406382f642b62f9ed932dd",
+      "recommended": true,
+      "note": "Recommended. After restoring, let the HomePod update itself from the Home app."
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+# SysCfg reference capture from HomePod CC4VKKTQHQK8
+# Captured 2026-11-15 via DIAGS shell (syscfg list)
+# ECID: 00092951386A6F26
+# Board: b238aap Rev 0x5
+
+Key: SrNm = CC4VKKTQHQK8
+Key: MLB# = CC4741500NYJK2N1K
+Key: Mod# = MQHW2
+Key: Regn = LL/A
+Key: CFG# = 0
+Key: RMd# = A1639
+Key: WMac = 0xE37A81D0 0x00009476 0x00000000 0x00000000
+Key: BMac = 0xE37A81D0 0x00009576 0x00000000 0x00000000
+Key: EMac = 0xE37A81D0 0x00009676 0x00000000 0x00000000
+Key: SwBh = 0x00000011 0x00000000 0x00000000 0x00000000
+Key: MiGa = 0x00000001 0x00000057 0x00000049 0x0000006B 0x00000067 0x00000064 0x0000004C
+Key: SpGa = 0x00000001 0x0000008C 0x00000000 0x00000000
+Key: CLCG = 0x00000001 0x00000000 0x00000000 0x00000001
+Key: CLHS = 0x00000001 0x00000000 0x00000000 0x00000001
+Key: ARot = 0x00000001 0x00000001 0x00010000 0x00000100
+Key: MdlC = 0;MoPED=0x617B20F1D1A2D12A22D16A82251C581194B75F07
+Key: WCAL = (large WiFi calibration blob - see full capture)
+Key: BCAL = (large Bluetooth calibration blob - see full capture)
+Key: SpEQ = (speaker EQ calibration data)
+Key: WFEQ = (woofer EQ data)
+Key: LEDc = (LED calibration data)
+Key: LSCI = (light sensor calibration data)
+
+# Keys queried but Not Found on this unit:
+# RMac, OPTS, HwVr, PACV, MtCl, MtSN, AlsC, ATSc, GYTT, GSCl, GSCi,
+# ASCl, ASCi, LTAO, DClr, GICl, FG2G, RSKU, CBAT, HVCB, CPAS, WpCl,
+# BLCl, BLCC, BLC2, SpCl, VBST, VPBR, VbCl, M2EQ, BTTx, GLCl, BTRx,
+# LCM#, Batt, BCSN, BCMS, FCMS, BCMB, FCMB, AICl, RSCl, GRot, CRot,
+# UTTF, NoCl, W24R, W50R, WRxT, CmCl, McCl, PRSq, SPPO
