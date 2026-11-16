@@ -188,7 +188,7 @@ struct DiagsShellView: View {
                                         Label("Reconfigure Model…", systemImage: "paintpalette")
                                     }
                                     .tint(.orange)
-                                    .help("Change the model number (Mod#) for a colour swap — Space Gray ↔ White. Writes to flash.")
+                                    .help("Change the HomePod's colour — Space Gray ↔ White. Writes Mod#, CLCG and CLHS to flash; after a firmware restore the iOS setup prompt shows the new colour.")
                                     .disabled(!model.diagsConnected)
                                 }
                             }
@@ -544,8 +544,11 @@ struct DiagsSysCfgWriteSheet: View {
     }
 }
 
-/// Form for changing the unit's model number (`Mod#`) over the DIAGS shell —
-/// the colour swap: Space Gray (MQHW2) ↔ White (MQHV2). Writes flash.
+/// Form for changing the unit's colour over the DIAGS shell: Space Gray
+/// (MQHW2) ↔ White (MQHV2). Writes three SysCfg keys — the model number
+/// (`Mod#`), `CLCG` (Cover Glass Color) and `CLHS` (Housing Color). Confirmed
+/// on real hardware: after a firmware restore the iOS setup prompt shows the
+/// new colour. Writes flash.
 struct DiagsModelReconfigureSheet: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
@@ -560,7 +563,37 @@ struct DiagsModelReconfigureSheet: View {
     private var target: HomePodModelVariant? { HomePodModelVariant.all.first { $0.modelBase == targetBase } }
     private var trimmedModel: String { newModel.trimmingCharacters(in: .whitespaces) }
     private var modelValid: Bool { (try? DiagsSerialSession.validatedModelNumber(trimmedModel)) != nil }
-    private var unchanged: Bool { currentModel != nil && trimmedModel == currentModel }
+    /// The colour whose code goes into CLCG / CLHS: the one the model number
+    /// being written belongs to, otherwise the one picked.
+    private var writeColor: HomePodModelVariant? { HomePodModelVariant.variant(for: trimmedModel) ?? target }
+    /// The 32-bit words of a colour key as last read, if it was read.
+    private func colorWords(_ key: String) -> [UInt32]? {
+        model.diagsCurrentColorKeys[key].flatMap { SysCfgEntry(key: key, value: $0).words }
+    }
+    /// CLCG and CLHS both already hold `writeColor`'s value.
+    private var colorKeysMatch: Bool {
+        guard let writeColor else { return true }
+        return DiagsSerialSession.colorKeys.allSatisfy { colorWords($0) == writeColor.clcgValue }
+    }
+    private var modelUnchanged: Bool { currentModel != nil && trimmedModel == currentModel }
+    /// Nothing to do: the model number and both colour keys are already there.
+    private var unchanged: Bool { modelUnchanged && colorKeysMatch }
+    /// A colour key that was read and doesn't agree with the current model
+    /// number — a unit where only `Mod#` was changed.
+    private var colorKeysDisagree: Bool {
+        guard let current = currentVariant else { return false }
+        return DiagsSerialSession.colorKeys.contains { key in
+            guard let words = colorWords(key) else { return false }
+            return words != current.clcgValue
+        }
+    }
+    /// "CLCG 0x00000001 (Space Gray)", or "CLCG —" when it hasn't been read.
+    private func colorKeyText(_ key: String) -> String {
+        guard let value = model.diagsCurrentColorKeys[key], !value.isEmpty else { return "\(key) —" }
+        guard let words = colorWords(key), let code = words.last else { return "\(key) \(String(value.prefix(24)))" }
+        let name = HomePodModelVariant.variant(forColorWords: words)?.color ?? "unknown colour code"
+        return "\(key) " + String(format: "0x%08X", code) + " (\(name))"
+    }
     private var canReconfigure: Bool { model.diagsReady && modelValid && !unchanged }
     /// A `DClr` (device colour) key, if the last `syscfg list` had one.
     private var deviceColourKey: String? { model.diagsSysCfgEntries.first { $0.key == "DClr" }?.value }
@@ -577,8 +610,13 @@ struct DiagsModelReconfigureSheet: View {
                 Spacer()
             }
 
+            Banner(icon: "checkmark.seal.fill",
+                   text: "Changes the HomePod’s color (e.g. Space Gray → White). Writes three SysCfg keys: Mod# (model number), CLCG (Cover Glass Color), and CLHS (Housing Color).\n\nAfter restoring firmware, the iOS setup prompt will show the new color. Confirmed on real hardware.",
+                   tint: .accentColor)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
             Banner(icon: "exclamationmark.triangle.fill",
-                   text: "Changing the model number will make the system identify as a different color. LED calibration (LEDc) was factory-calibrated for the original mesh color and may look slightly off. This writes to the HomePod's flash — save the unit's \"syscfg list\" output first.",
+                   text: "LED calibration (LEDc) is not changed. It was factory-tuned for the original mesh, so LED colors may look slightly off after a swap. This writes to the HomePod’s flash — save the unit’s syscfg list output before writing.",
                    tint: .orange)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
@@ -601,7 +639,7 @@ struct DiagsModelReconfigureSheet: View {
                     Button { model.readDiagsModelIdentity() } label: { Label("Read", systemImage: "arrow.clockwise") }
                         .controlSize(.small)
                         .disabled(!model.diagsReady)
-                        .help("Runs: syscfg print Mod# and syscfg print Regn. Only reads.")
+                        .help("Runs: syscfg print for Mod#, Regn, CLCG and CLHS. Only reads.")
                 }
                 HStack(alignment: .firstTextBaseline) {
                     Text("Region").foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
@@ -609,6 +647,16 @@ struct DiagsModelReconfigureSheet: View {
                         .font(.system(.body, design: .monospaced)).textSelection(.enabled)
                     Text("Regn — not changed").font(.caption).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Colour keys").foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
+                    Text(verbatim: DiagsSerialSession.colorKeys.map { colorKeyText($0) }.joined(separator: "   "))
+                        .font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                    Spacer(minLength: 0)
+                }
+                if colorKeysDisagree {
+                    Text("Mod# and the colour keys don’t agree — only part of a colour change was written to this unit. Reconfigure writes all three.")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
                 if let colour = deviceColourKey {
                     Text(verbatim: "This unit also has a DClr (device colour) key: \(String(colour.prefix(60))). It is not changed here — use SysCfg Write… if it needs to follow.")
@@ -639,11 +687,13 @@ struct DiagsModelReconfigureSheet: View {
                     if !trimmedModel.isEmpty && !modelValid {
                         Text("4 to 16 letters, digits, / or - (no spaces)").font(.caption).foregroundStyle(.orange)
                     } else if unchanged {
-                        Text("Already this model").font(.caption).foregroundStyle(.secondary)
+                        Text("Already this model and colour").font(.caption).foregroundStyle(.secondary)
+                    } else if modelUnchanged, writeColor != nil {
+                        Text("Mod# already set — CLCG and CLHS will be brought in line").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                 }
-                Text("Filled in from the colour above, keeping any region suffix the current model carries. Edit it for another variant.")
+                Text("Filled in from the colour above, keeping any region suffix the current model carries. Edit it for another variant. CLCG and CLHS get the colour code of the model written (1 = Space Gray, 2 = White), or of the colour picked above when the model isn’t one of the two.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -672,17 +722,17 @@ struct DiagsModelReconfigureSheet: View {
                 Button("Reconfigure") { reconfigure() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canReconfigure)
-                    .help(canReconfigure ? "Deletes Mod#, writes \(trimmedModel), then reads it back." : "Connect, and enter a model number different from the current one.")
+                    .help(canReconfigure ? "Deletes and rewrites Mod# (\(trimmedModel)), CLCG and CLHS, then reads all three back." : "Connect, and pick a colour different from the current one.")
             }
         }
         .padding(20)
-        .frame(minWidth: 620, minHeight: 500)
+        .frame(minWidth: 660, minHeight: 680)
         .onAppear {
             model.diagsModelStatus = nil
             model.diagsModelFailed = false
             // Prefer what the last `syscfg list` showed; otherwise ask the pod.
-            if model.diagsCurrentModel == nil { model.noteDiagsModelIdentityFromList() }
-            if model.diagsCurrentModel == nil, model.diagsReady { model.readDiagsModelIdentity() }
+            if model.diagsCurrentModel == nil || model.diagsCurrentColorKeys.isEmpty { model.noteDiagsModelIdentityFromList() }
+            if model.diagsCurrentModel == nil || model.diagsCurrentColorKeys.isEmpty, model.diagsReady { model.readDiagsModelIdentity() }
             pickOtherColour()
             fillNewModel()
         }
@@ -697,7 +747,7 @@ struct DiagsModelReconfigureSheet: View {
     }
 
     private var commandPreview: String {
-        ((try? DiagsSerialSession.modelReconfigureCommands(to: trimmedModel)) ?? []).joined(separator: "\n")
+        ((try? DiagsSerialSession.modelReconfigureCommands(to: trimmedModel, color: writeColor)) ?? []).joined(separator: "\n")
     }
 
     /// Starts the picker on the colour the unit is NOT — the usual job.
@@ -713,6 +763,6 @@ struct DiagsModelReconfigureSheet: View {
     }
 
     private func reconfigure() {
-        model.reconfigureDiagsModel(to: trimmedModel)
+        model.reconfigureDiagsModel(to: trimmedModel, color: writeColor)
     }
 }

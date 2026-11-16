@@ -22,6 +22,11 @@ tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
 - **Health check**: Quick check (USB link speed, A8 chip, b238 board, checkm8 unlock) and a
   non-destructive Boot test (`idevicerestore -z`: boots the restore ramdisk, erases nothing).
   NAND is judged during a real restore (NAND wait time, "Waiting on NAND", NVRAM timeouts, Disk Failure).
+- **Color change (Space Gray ↔ White)**: over the factory DIAGS serial shell, *Reconfigure Model…*
+  rewrites the three SysCfg keys that carry a HomePod's color — `Mod#` (model number), `CLCG`
+  (Cover Glass Color) and `CLHS` (Housing Color) — and reads all three back. Confirmed on real
+  hardware: after restoring firmware, the iOS setup prompt shows the new color. See
+  [docs/diags-boot.md](docs/diags-boot.md#color-reconfiguration-space-gray--white).
 - **Errors explained**: every message in the guide's Troubleshooting section is mapped to a
   title, explanation and "what to try", with hardware failures flagged as such. "Copy support info"
   produces a Discord-ready report (ECID redacted).

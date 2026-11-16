@@ -60,7 +60,7 @@ enum DiagsModelReconfigureError: LocalizedError {
         case .notReady:
             return "The DIAGS shell isn't ready — connect, and wait for the command that is running to finish."
         case .disconnected:
-            return "The serial connection was lost part-way through. Reconnect and read Mod# (syscfg print Mod#) to see what was written."
+            return "The serial connection was lost part-way through. Reconnect and read Mod#, CLCG and CLHS (syscfg print <key>) to see what was written, then run the reconfiguration again."
         }
     }
 }
@@ -164,6 +164,7 @@ extension AppModel {
             // The next unit on this cable is a different HomePod.
             diagsCurrentModel = nil
             diagsCurrentRegion = nil
+            diagsCurrentColorKeys = [:]
             diagsModelStatus = nil
             diagsModelFailed = false
         }
@@ -244,13 +245,14 @@ extension AppModel {
             self.diagsSysCfgRaw = nil
             self.diagsCurrentModel = nil
             self.diagsCurrentRegion = nil
+            self.diagsCurrentColorKeys = [:]
         }
     }
 
     // MARK: Model reconfiguration (colour swap)
 
-    /// Takes the model number and region from the last `syscfg list`, when it
-    /// has them.
+    /// Takes the model number, region and colour keys from the last
+    /// `syscfg list`, when it has them.
     func noteDiagsModelIdentityFromList() {
         if let model = diagsSysCfgEntries.first(where: { $0.key == DiagsSerialSession.modelKey })?.value, !model.isEmpty {
             diagsCurrentModel = model
@@ -258,13 +260,19 @@ extension AppModel {
         if let region = diagsSysCfgEntries.first(where: { $0.key == "Regn" })?.value, !region.isEmpty {
             diagsCurrentRegion = region
         }
+        for key in DiagsSerialSession.colorKeys {
+            if let value = diagsSysCfgEntries.first(where: { $0.key == key })?.value, !value.isEmpty {
+                diagsCurrentColorKeys[key] = value
+            }
+        }
     }
 
-    /// `syscfg print Mod#` and `syscfg print Regn` — only reads. Fills
-    /// `diagsCurrentModel` / `diagsCurrentRegion` for the Reconfigure Model
-    /// sheet; a key that errors (not set) leaves its value empty.
+    /// `syscfg print` of `Mod#`, `Regn`, `CLCG` and `CLHS` — only reads. Fills
+    /// `diagsCurrentModel` / `diagsCurrentRegion` / `diagsCurrentColorKeys`
+    /// for the Reconfigure Model sheet; a key that errors (not set) leaves its
+    /// value empty.
     func readDiagsModelIdentity() {
-        let keys = [DiagsSerialSession.modelKey, "Regn"]
+        let keys = [DiagsSerialSession.modelKey, "Regn"] + DiagsSerialSession.colorKeys
         runDiagsCommands(keys.map { "syscfg print \($0)" }, label: "Read Model",
                          timeout: diagsSession?.longCommandTimeout) { [weak self] results in
             guard let self else { return }
@@ -272,25 +280,30 @@ extension AppModel {
                 let value = result.succeeded ? DiagsSerialSession.valueFromPrint(result.cleanOutput, key: key) : ""
                 if key == DiagsSerialSession.modelKey {
                     self.diagsCurrentModel = value.isEmpty ? nil : value
-                } else {
+                } else if key == "Regn" {
                     self.diagsCurrentRegion = value.isEmpty ? nil : value
+                } else {
+                    self.diagsCurrentColorKeys[key] = value.isEmpty ? nil : value
                 }
             }
         }
     }
 
-    /// Changes the unit's model number (`Mod#`) — the colour the system
-    /// reports. WRITES FLASH — only called from the Reconfigure Model sheet.
+    /// Changes the unit's colour: the model number (`Mod#`) and the colour
+    /// keys `CLCG` (Cover Glass Color) and `CLHS` (Housing Color). WRITES
+    /// FLASH — only called from the Reconfigure Model sheet.
     ///
-    /// Sends `syscfg delete Mod#`, `syscfg add Mod# <newModel>` and
-    /// `syscfg print Mod#`, logging each like any other command, and returns
-    /// the model number read back. Throws when the model isn't valid (nothing
-    /// is sent), when the shell is busy or goes away, or when the read-back
-    /// isn't the new model.
+    /// Sends `DiagsSerialSession.modelReconfigureCommands(to:color:)` —
+    /// delete + add for each key, then `syscfg print` of all three — logging
+    /// each line like any other command, and returns the model number read
+    /// back. `color` is the colour whose code goes into CLCG / CLHS; `nil`
+    /// takes it from the model number. Throws when the model isn't valid
+    /// (nothing is sent), when the shell is busy or goes away, or when a
+    /// read-back isn't what was written.
     @discardableResult
-    func reconfigureModel(to newModel: String) async throws -> String {
+    func reconfigureModel(to newModel: String, color: HomePodModelVariant? = nil) async throws -> String {
         // Validates first: a bad model must fail before `syscfg delete` runs.
-        let commands = try DiagsSerialSession.modelReconfigureCommands(to: newModel)
+        let commands = try DiagsSerialSession.modelReconfigureCommands(to: newModel, color: color)
         guard let session = diagsSession, diagsBusy == nil else { throw DiagsModelReconfigureError.notReady }
         let label = "Reconfigure Model"
         let timeout = session.longCommandTimeout
@@ -305,6 +318,9 @@ extension AppModel {
                 result = try await diagsSerialWork { try session.runCommand(command, timeout: timeout) }
             } catch {
                 if diagsSession === session {
+                    // Keys may already be deleted, so what is on the chip is unknown.
+                    diagsCurrentModel = nil
+                    diagsCurrentColorKeys = [:]
                     diagsFailed(error, label: label, command: command, session: session)
                     if diagsSession === session { diagsBusy = nil }
                 }
@@ -319,32 +335,46 @@ extension AppModel {
         diagsBusy = nil
 
         do {
-            let model = try DiagsSerialSession.verifiedModel(from: results, expected: newModel)
+            let model = try DiagsSerialSession.verifiedModel(from: results, expected: newModel, color: color)
             diagsCurrentModel = model
             // Keep the SysCfg table in step. `diagsSysCfgRaw` is left alone on
             // purpose: it is the list as captured, i.e. the pre-change backup.
-            if let index = diagsSysCfgEntries.firstIndex(where: { $0.key == DiagsSerialSession.modelKey }) {
-                diagsSysCfgEntries[index] = SysCfgEntry(key: DiagsSerialSession.modelKey, value: model)
+            var written = [DiagsSerialSession.modelKey: model]
+            if let color = DiagsSerialSession.reconfigureColor(for: model, color: color) {
+                for key in DiagsSerialSession.colorKeys {
+                    written[key] = color.clcgArgs
+                    diagsCurrentColorKeys[key] = color.clcgArgs
+                }
+            }
+            for (key, value) in written {
+                if let index = diagsSysCfgEntries.firstIndex(where: { $0.key == key }) {
+                    diagsSysCfgEntries[index] = SysCfgEntry(key: key, value: value)
+                }
             }
             return model
         } catch {
-            // The key was deleted first, so what is on the chip is unknown.
+            // The keys were deleted first, so what is on the chip is unknown.
             diagsCurrentModel = nil
+            diagsCurrentColorKeys = [:]
             throw error
         }
     }
 
-    /// Button entry point for the sheet: runs `reconfigureModel(to:)` and
-    /// turns its outcome into `diagsModelStatus`.
-    func reconfigureDiagsModel(to newModel: String) {
+    /// Button entry point for the sheet: runs `reconfigureModel(to:color:)`
+    /// and turns its outcome into `diagsModelStatus`.
+    func reconfigureDiagsModel(to newModel: String, color: HomePodModelVariant? = nil) {
         let previous = diagsCurrentModel
+        let previousColorKeys = diagsCurrentColorKeys
         diagsModelStatus = nil
         diagsModelFailed = false
         Task {
             do {
-                let model = try await reconfigureModel(to: newModel)
-                let colour = HomePodModelVariant.variant(for: model).map { " (\($0.color))" } ?? ""
-                diagsModelStatus = "Model number is now \(model)\(colour). Read back from the HomePod."
+                let model = try await reconfigureModel(to: newModel, color: color)
+                if let written = DiagsSerialSession.reconfigureColor(for: model, color: color) {
+                    diagsModelStatus = "This HomePod is now \(written.color): Mod# \(model), CLCG and CLHS \(written.colorCodeHex) — all three read back from the HomePod. Restore the firmware next; the iOS setup prompt will then show \(written.color)."
+                } else {
+                    diagsModelStatus = "Model number is now \(model). Read back from the HomePod. CLCG and CLHS were not changed — \(model) isn't a known colour."
+                }
                 diagsModelFailed = false
             } catch {
                 var text = error.localizedDescription
@@ -353,8 +383,13 @@ extension AppModel {
                 var nothingSent = false
                 if let diags = error as? DiagsSerialError, case .invalidModel = diags { nothingSent = true }
                 if let own = error as? DiagsModelReconfigureError, case .notReady = own { nothingSent = true }
-                if !nothingSent, let previous, !previous.isEmpty {
-                    text += " The model number before this was \(previous)."
+                if !nothingSent {
+                    var before: [String] = []
+                    if let previous, !previous.isEmpty { before.append("Mod# \(previous)") }
+                    for key in DiagsSerialSession.colorKeys {
+                        if let value = previousColorKeys[key], !value.isEmpty { before.append("\(key) \(value)") }
+                    }
+                    if !before.isEmpty { text += " Before this: " + before.joined(separator: "; ") + "." }
                 }
                 diagsModelStatus = text
                 diagsModelFailed = true
@@ -424,7 +459,7 @@ extension AppModel {
                 log(partial.isEmpty ? diags.localizedDescription : partial + "\n\n" + diags.localizedDescription)
             case .invalidCommand, .invalidKey, .invalidValue, .invalidModel:
                 diagsError = diags.localizedDescription
-            case .noPrompt, .modelNotVerified:
+            case .noPrompt, .modelNotVerified, .colorNotVerified:
                 log(diags.localizedDescription)
             }
             return

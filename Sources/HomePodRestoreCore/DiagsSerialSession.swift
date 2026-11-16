@@ -100,6 +100,8 @@ public struct SysCfgEntry: Sendable, Equatable, Identifiable {
         "LEDc": "LED calibration",
         "LSCI": "Light sensor calibration",
         "DClr": "Device colour",
+        "CLCG": "Cover glass colour (last word: 1 = Space Gray, 2 = White)",
+        "CLHS": "Housing colour (last word: 1 = Space Gray, 2 = White)",
     ]
 }
 
@@ -115,6 +117,9 @@ public enum DiagsSerialError: Error, Equatable, LocalizedError {
     case invalidModel(String)
     /// The model number was written, but reading `Mod#` back didn't give it.
     case modelNotVerified(expected: String, found: String)
+    /// A colour key (`CLCG` / `CLHS`) was written, but reading it back didn't
+    /// give the new value. `expected` and `found` are the hex words.
+    case colorNotVerified(key: String, expected: String, found: String)
     /// The shell never printed its prompt.
     case noPrompt(partial: String)
     /// The command started but its prompt never came back.
@@ -138,6 +143,10 @@ public enum DiagsSerialError: Error, Equatable, LocalizedError {
             return found.isEmpty
                 ? "Mod# did not read back after the write (expected \(expected)). The key may now be missing — check the output and write it again."
                 : "Mod# read back as \"\(found)\", not \(expected). Check the output and write it again."
+        case .colorNotVerified(let key, let expected, let found):
+            return found.isEmpty
+                ? "\(key) did not read back after the write (expected \(expected)). The key may now be missing — check the output and run the reconfiguration again."
+                : "\(key) read back as \"\(found)\", not \(expected). Check the output and run the reconfiguration again."
         case .noPrompt:
             return "No DIAGS prompt. Check that the pod has booted into Factory DIAGS, that this is the right serial port, and that the adapter's TX/RX aren't swapped."
         case .commandTimedOut(let command, _):
@@ -286,12 +295,26 @@ public final class DiagsSerialSession: @unchecked Sendable {
 
     // MARK: Model reconfiguration (colour swap)
     //
-    // A 1st-gen HomePod's colour is its model number: MQHW2 (Space Gray) or
-    // MQHV2 (White) — see `HomePodModelVariant`. Changing it is three lines:
-    // delete the key, add it with the new value, read it back.
+    // A 1st-gen HomePod's colour is three SysCfg keys — see
+    // `HomePodModelVariant`: the model number `Mod#` (MQHW2 Space Gray, MQHV2
+    // White) and the two colour keys `CLCG` (Cover Glass Color) and `CLHS`
+    // (Housing Color), whose last word is the colour code. Changing colour is
+    // nine lines: delete and add each key, then read all three back.
+    //
+    // Confirmed on real hardware: with all three written and the firmware
+    // restored, the iOS setup prompt shows the new colour. `Mod#` alone does
+    // not do it.
 
     /// The SysCfg key that holds the model number.
     public static let modelKey = "Mod#"
+    /// Cover Glass Color.
+    public static let coverGlassColorKey = "CLCG"
+    /// Housing Color.
+    public static let housingColorKey = "CLHS"
+    /// The two colour keys, in the order they are written and read back.
+    public static let colorKeys = [coverGlassColorKey, housingColorKey]
+    /// What each colour key is called, for messages.
+    public static let colorKeyNames = [coverGlassColorKey: "Cover Glass Color", housingColorKey: "Housing Color"]
 
     /// A model number that is safe to put on a `syscfg add` line: 4 to 16
     /// letters, digits, "/" or "-". No spaces — a space would split it into
@@ -306,39 +329,93 @@ public final class DiagsSerialSession: @unchecked Sendable {
         return trimmed
     }
 
-    /// The three lines that change the model number, in order. WRITE FLASH.
-    /// Throws before anything is sent when `newModel` isn't a model number.
-    public static func modelReconfigureCommands(to newModel: String) throws -> [String] {
-        let model = try validatedModelNumber(newModel)
-        return ["syscfg delete \(modelKey)", "syscfg add \(modelKey) \(model)", "syscfg print \(modelKey)"]
+    /// The colour whose keys are written with `newModel`: `color` when given,
+    /// otherwise the variant the model number belongs to. `nil` — a model that
+    /// isn't one of the known variants, and no colour named — means only
+    /// `Mod#` is written.
+    public static func reconfigureColor(for newModel: String, color: HomePodModelVariant? = nil) -> HomePodModelVariant? {
+        color ?? HomePodModelVariant.variant(for: newModel)
     }
 
-    /// The model number read back by the last of `modelReconfigureCommands`.
-    /// Throws `.modelNotVerified` unless it is exactly `expected` — the
-    /// read-back is the proof, whatever the delete and add lines printed (the
-    /// delete of a key that was never set is allowed to complain).
-    public static func verifiedModel(from results: [DiagsCommandResult], expected: String) throws -> String {
+    /// The lines that change the unit's colour, in order. WRITE FLASH.
+    ///
+    ///     syscfg delete Mod#
+    ///     syscfg add Mod# <newModel>
+    ///     syscfg delete CLCG
+    ///     syscfg add CLCG 0x00000001 0x00000000 0x00000000 <colour code>
+    ///     syscfg delete CLHS
+    ///     syscfg add CLHS 0x00000001 0x00000000 0x00000000 <colour code>
+    ///     syscfg print Mod#
+    ///     syscfg print CLCG
+    ///     syscfg print CLHS
+    ///
+    /// The colour is `reconfigureColor(for:color:)`. When there is none (an
+    /// unknown model and no `color`), only the three `Mod#` lines are
+    /// returned. Throws before anything is sent when `newModel` isn't a model
+    /// number.
+    public static func modelReconfigureCommands(to newModel: String, color: HomePodModelVariant? = nil) throws -> [String] {
+        let model = try validatedModelNumber(newModel)
+        var writes = ["syscfg delete \(modelKey)", "syscfg add \(modelKey) \(model)"]
+        var readBacks = ["syscfg print \(modelKey)"]
+        if let color = reconfigureColor(for: model, color: color) {
+            for key in colorKeys {
+                writes += ["syscfg delete \(key)", "syscfg add \(key) \(color.clcgArgs)"]
+                readBacks.append("syscfg print \(key)")
+            }
+        }
+        return writes + readBacks
+    }
+
+    /// Checks the read-backs at the end of `modelReconfigureCommands` and
+    /// returns the model number read back. The read-backs are the proof,
+    /// whatever the delete and add lines printed (the delete of a key that was
+    /// never set is allowed to complain).
+    ///
+    /// Throws `.modelNotVerified` unless `syscfg print Mod#` gave exactly
+    /// `expected`, and `.colorNotVerified` unless `syscfg print CLCG` and
+    /// `syscfg print CLHS` each gave the colour's four words. The colour is
+    /// `reconfigureColor(for:color:)` — pass the same `color` the commands
+    /// were built with; with no colour only `Mod#` is checked.
+    public static func verifiedModel(from results: [DiagsCommandResult], expected: String,
+                                     color: HomePodModelVariant? = nil) throws -> String {
         let expected = try validatedModelNumber(expected)
-        guard results.count == 3, !results[2].hasError else {
+        // Each key's read-back is the LAST print of it — the one after the write.
+        func readBack(_ key: String) -> String? {
+            guard let result = results.last(where: { $0.command == "syscfg print \(key)" }), !result.hasError else { return nil }
+            return valueFromPrint(result.cleanOutput, key: key)
+        }
+        guard let found = readBack(modelKey) else {
             throw DiagsSerialError.modelNotVerified(expected: expected, found: "")
         }
-        let found = valueFromPrint(results[2].cleanOutput, key: modelKey)
         guard found == expected else {
             throw DiagsSerialError.modelNotVerified(expected: expected, found: String(found.prefix(80)))
+        }
+        if let color = reconfigureColor(for: expected, color: color) {
+            for key in colorKeys {
+                guard let value = readBack(key) else {
+                    throw DiagsSerialError.colorNotVerified(key: key, expected: color.clcgArgs, found: "")
+                }
+                guard SysCfgEntry(key: key, value: value).words == color.clcgValue else {
+                    throw DiagsSerialError.colorNotVerified(key: key, expected: color.clcgArgs, found: String(value.prefix(80)))
+                }
+            }
         }
         return found
     }
 
-    /// Changes the unit's model number (`Mod#`) — and with it the colour the
-    /// system reports. WRITES FLASH. Sends `syscfg delete Mod#`,
-    /// `syscfg add Mod# <newModel>` and `syscfg print Mod#`, and returns the
-    /// value read back. Throws `.modelNotVerified` when the read-back isn't
-    /// the new model.
+    /// Changes the unit's colour: the model number (`Mod#`) and the two
+    /// colour keys (`CLCG`, `CLHS`). WRITES FLASH. Sends
+    /// `modelReconfigureCommands(to:color:)` and returns the model number read
+    /// back. Throws `.modelNotVerified` / `.colorNotVerified` when a
+    /// read-back isn't what was written.
+    ///
+    /// After this, restore the firmware: the iOS setup prompt then shows the
+    /// new colour.
     @discardableResult
-    public func reconfigureModel(to newModel: String) throws -> String {
-        let commands = try Self.modelReconfigureCommands(to: newModel)
+    public func reconfigureModel(to newModel: String, color: HomePodModelVariant? = nil) throws -> String {
+        let commands = try Self.modelReconfigureCommands(to: newModel, color: color)
         let results = try runCommands(commands, timeout: longCommandTimeout)
-        return try Self.verifiedModel(from: results, expected: newModel)
+        return try Self.verifiedModel(from: results, expected: newModel, color: color)
     }
 
     // MARK: Grouped readings
@@ -639,9 +716,9 @@ public final class DiagsSerialSession: @unchecked Sendable {
 // is labelled as one on the button. If it turns out wrong, change the line to
 // `help nvram`.
 //
-// No button writes flash. Changing the model number (colour) writes SysCfg, so
-// it goes through its own sheet — `reconfigureModel(to:)` above — like the
-// SysCfg write form.
+// No button writes flash. Changing the colour (Mod#, CLCG, CLHS) writes
+// SysCfg, so it goes through its own sheet — `reconfigureModel(to:color:)`
+// above — like the SysCfg write form.
 //
 // NEVER add `NANDInfoTool`: it panics DIAGS (null-pointer dereference in
 // TestNand.macho) and the pod drops to DFU. Bare `nand`, `temperature`,

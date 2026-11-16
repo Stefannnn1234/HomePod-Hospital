@@ -332,6 +332,38 @@ final class DiagsSerialTests: XCTestCase {
         XCTAssertEqual(HomePodModelVariant.all.map(\.color), ["Space Gray", "White"])
     }
 
+    /// CLCG (Cover Glass Color) and CLHS (Housing Color): four words, the
+    /// last is the colour code. Values confirmed on real hardware.
+    func testModelVariantColorCodes() {
+        XCTAssertEqual(HomePodModelVariant.spaceGray.colorCode, 1)
+        XCTAssertEqual(HomePodModelVariant.white.colorCode, 2)
+        XCTAssertEqual(HomePodModelVariant.spaceGray.clcgValue, [0x00000001, 0x00000000, 0x00000000, 0x00000001])
+        XCTAssertEqual(HomePodModelVariant.white.clcgValue, [0x00000001, 0x00000000, 0x00000000, 0x00000002])
+        XCTAssertEqual(HomePodModelVariant.spaceGray.clcgArgs, "0x00000001 0x00000000 0x00000000 0x00000001")
+        XCTAssertEqual(HomePodModelVariant.white.clcgArgs, "0x00000001 0x00000000 0x00000000 0x00000002")
+        XCTAssertEqual(HomePodModelVariant.white.colorCodeHex, "0x00000002")
+
+        // The args are what DIAGS prints back, so they parse to the same words.
+        for variant in HomePodModelVariant.all {
+            XCTAssertEqual(SysCfgEntry(key: "CLCG", value: variant.clcgArgs).words, variant.clcgValue, variant.color)
+            XCTAssertEqual(HomePodModelVariant.variant(forColorWords: variant.clcgValue), variant, variant.color)
+            XCTAssertNoThrow(try DiagsSerialSession.validatedValue(variant.clcgArgs))
+        }
+        XCTAssertNil(HomePodModelVariant.variant(forColorWords: []))
+        XCTAssertNil(HomePodModelVariant.variant(forColorWords: [1, 0, 0, 3]))
+
+        XCTAssertEqual(DiagsSerialSession.colorKeys, ["CLCG", "CLHS"])
+        for key in DiagsSerialSession.colorKeys {
+            XCTAssertTrue(DiagsSerialSession.isSysCfgKey(key), key)
+            XCTAssertNotNil(SysCfgEntry.knownKeys[key], key)
+            XCTAssertNotNil(DiagsSerialSession.colorKeyNames[key], key)
+        }
+        // The reference capture's own lines (docs/syscfg-reference-capture.txt).
+        let listed = DiagsSerialSession.parseSysCfgList("Key: CLCG = 0x00000001 0x00000000 0x00000000 0x00000001\nKey: CLHS = 0x00000001 0x00000000 0x00000000 0x00000001")
+        XCTAssertEqual(listed.map(\.key), ["CLCG", "CLHS"])
+        XCTAssertEqual(listed.compactMap(\.words).compactMap { HomePodModelVariant.variant(forColorWords: $0) }, [.spaceGray, .spaceGray])
+    }
+
     func testModelValidationAndCommands() throws {
         XCTAssertEqual(try DiagsSerialSession.validatedModelNumber(" MQHV2 "), "MQHV2")
         XCTAssertEqual(try DiagsSerialSession.validatedModelNumber("MQHV2LL/A"), "MQHV2LL/A")
@@ -341,46 +373,165 @@ final class DiagsSerialTests: XCTestCase {
             }
             XCTAssertThrowsError(try DiagsSerialSession.modelReconfigureCommands(to: bad), bad)
         }
+        // A colour change is all three keys — Mod#, CLCG and CLHS — written
+        // first and then read back.
+        let white = "0x00000001 0x00000000 0x00000000 0x00000002"
+        let gray = "0x00000001 0x00000000 0x00000000 0x00000001"
         let commands = try DiagsSerialSession.modelReconfigureCommands(to: "MQHV2")
-        XCTAssertEqual(commands, ["syscfg delete Mod#", "syscfg add Mod# MQHV2", "syscfg print Mod#"])
-        XCTAssertEqual(commands.map { DiagsCommandReference.risk(ofLine: $0) }, [.writesFlash, .writesFlash, .readOnly])
+        XCTAssertEqual(commands, [
+            "syscfg delete Mod#", "syscfg add Mod# MQHV2",
+            "syscfg delete CLCG", "syscfg add CLCG \(white)",
+            "syscfg delete CLHS", "syscfg add CLHS \(white)",
+            "syscfg print Mod#", "syscfg print CLCG", "syscfg print CLHS",
+        ])
+        XCTAssertEqual(commands.map { DiagsCommandReference.risk(ofLine: $0) },
+                       Array(repeating: .writesFlash, count: 6) + Array(repeating: .readOnly, count: 3))
         for line in commands { XCTAssertNoThrow(try DiagsSerialSession.validatedCommand(line)) }
         XCTAssertTrue(DiagsSerialSession.isSysCfgKey(DiagsSerialSession.modelKey))
+
+        // Space Gray gets code 1, and a region suffix doesn't change the colour.
+        XCTAssertEqual(try DiagsSerialSession.modelReconfigureCommands(to: "MQHW2LL/A"), [
+            "syscfg delete Mod#", "syscfg add Mod# MQHW2LL/A",
+            "syscfg delete CLCG", "syscfg add CLCG \(gray)",
+            "syscfg delete CLHS", "syscfg add CLHS \(gray)",
+            "syscfg print Mod#", "syscfg print CLCG", "syscfg print CLHS",
+        ])
+        // The colour comes from the model number unless one is named.
+        XCTAssertEqual(try DiagsSerialSession.modelReconfigureCommands(to: "MQHV2", color: .white), commands)
+        // A model that isn't a known colour takes the colour named…
+        let custom = try DiagsSerialSession.modelReconfigureCommands(to: "ZZZZ9", color: .white)
+        XCTAssertEqual(custom.count, 9)
+        XCTAssertTrue(custom.contains("syscfg add Mod# ZZZZ9"))
+        XCTAssertTrue(custom.contains("syscfg add CLCG \(white)"))
+        XCTAssertTrue(custom.contains("syscfg add CLHS \(white)"))
+        // …and with none named, only Mod# is touched: no colour key is deleted.
+        XCTAssertEqual(try DiagsSerialSession.modelReconfigureCommands(to: "ZZZZ9"),
+                       ["syscfg delete Mod#", "syscfg add Mod# ZZZZ9", "syscfg print Mod#"])
+        XCTAssertNil(DiagsSerialSession.reconfigureColor(for: "ZZZZ9"))
+        XCTAssertEqual(DiagsSerialSession.reconfigureColor(for: "ZZZZ9", color: .spaceGray), .spaceGray)
+        XCTAssertEqual(DiagsSerialSession.reconfigureColor(for: "MQHV2X/A"), .white)
+    }
+
+    private static let whiteWords = "0x00000001 0x00000000 0x00000000 0x00000002"
+    private static let grayWords = "0x00000001 0x00000000 0x00000000 0x00000001"
+    private static let whiteSequence = [
+        "syscfg delete Mod#", "syscfg add Mod# MQHV2",
+        "syscfg delete CLCG", "syscfg add CLCG \(whiteWords)",
+        "syscfg delete CLHS", "syscfg add CLHS \(whiteWords)",
+        "syscfg print Mod#", "syscfg print CLCG", "syscfg print CLHS",
+    ]
+
+    /// A fake pod that accepts every write of the colour change and reads the
+    /// three keys back as given.
+    private func reconfigureShell(model: String, clcg: String, clhs: String) throws -> FakeDiagsShell {
+        let shell = try FakeDiagsShell()
+        let ok = "Exit code = 0x00000000\r\n"
+        for key in ["Mod#", "CLCG", "CLHS"] { shell.replies["syscfg delete \(key)"] = ok }
+        for value in ["MQHV2", "MQHW2"] { shell.replies["syscfg add Mod# \(value)"] = ok }
+        for key in ["CLCG", "CLHS"] {
+            for value in [Self.whiteWords, Self.grayWords] { shell.replies["syscfg add \(key) \(value)"] = ok }
+        }
+        shell.replies["syscfg print Mod#"] = "Key: Mod# = \(model)\r\n" + ok
+        shell.replies["syscfg print CLCG"] = "Key: CLCG = \(clcg)\r\n" + ok
+        shell.replies["syscfg print CLHS"] = "Key: CLHS = \(clhs)\r\n" + ok
+        return shell
     }
 
     func testReconfigureModel() throws {
-        let shell = try FakeDiagsShell()
-        shell.replies["syscfg delete Mod#"] = "Exit code = 0x00000000\r\n"
-        shell.replies["syscfg add Mod# MQHV2"] = "Exit code = 0x00000000\r\n"
-        shell.replies["syscfg print Mod#"] = "Key: Mod# = MQHV2\r\nExit code = 0x00000000\r\n"
-        shell.replies["syscfg add Mod# MQHW2"] = "Exit code = 0x00000000\r\n"
+        let shell = try reconfigureShell(model: "MQHV2", clcg: Self.whiteWords, clhs: Self.whiteWords)
         let session = try connect(shell)
         defer { session.port.close(); shell.unplug() }
 
         XCTAssertEqual(try session.reconfigureModel(to: " MQHV2 "), "MQHV2")
-        XCTAssertEqual(shell.commands, ["syscfg delete Mod#", "syscfg add Mod# MQHV2", "syscfg print Mod#"])
+        XCTAssertEqual(shell.commands, Self.whiteSequence, "Mod#, CLCG and CLHS are all written, then all read back")
 
         // A model that isn't valid sends nothing at all — above all, no delete.
         XCTAssertThrowsError(try session.reconfigureModel(to: "MQHV2 LL/A"))
-        XCTAssertEqual(shell.commands.count, 3)
+        XCTAssertEqual(shell.commands.count, 9)
 
         // The read-back is the proof: the fake still answers MQHV2.
         XCTAssertThrowsError(try session.reconfigureModel(to: "MQHW2")) { error in
             XCTAssertEqual(error as? DiagsSerialError, .modelNotVerified(expected: "MQHW2", found: "MQHV2"))
         }
+        XCTAssertEqual(shell.commands.count, 18)
+        XCTAssertTrue(shell.commands.contains("syscfg add CLCG \(Self.grayWords)"))
+        XCTAssertTrue(shell.commands.contains("syscfg add CLHS \(Self.grayWords)"))
+    }
+
+    /// Mod# reading back right isn't enough: each colour key has to as well.
+    func testReconfigureModelVerifiesColorKeys() throws {
+        // CLCG still Space Gray.
+        let staleGlass = try reconfigureShell(model: "MQHV2", clcg: Self.grayWords, clhs: Self.whiteWords)
+        let first = try connect(staleGlass)
+        XCTAssertThrowsError(try first.reconfigureModel(to: "MQHV2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError,
+                           .colorNotVerified(key: "CLCG", expected: Self.whiteWords, found: Self.grayWords))
+            XCTAssertTrue(error.localizedDescription.contains("CLCG"))
+        }
+        XCTAssertEqual(staleGlass.commands, Self.whiteSequence)
+        first.port.close(); staleGlass.unplug()
+
+        // CLHS still Space Gray.
+        let staleHousing = try reconfigureShell(model: "MQHV2", clcg: Self.whiteWords, clhs: Self.grayWords)
+        let second = try connect(staleHousing)
+        XCTAssertThrowsError(try second.reconfigureModel(to: "MQHV2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError,
+                           .colorNotVerified(key: "CLHS", expected: Self.whiteWords, found: Self.grayWords))
+        }
+        second.port.close(); staleHousing.unplug()
+
+        // Lower-case hex from the pod is the same value.
+        let lower = try reconfigureShell(model: "MQHW2", clcg: "0x00000001 0x00000000 0x00000000 0x00000001",
+                                         clhs: "0x1 0x0 0x0 0x1")
+        let third = try connect(lower)
+        XCTAssertEqual(try third.reconfigureModel(to: "MQHW2"), "MQHW2")
+        third.port.close(); lower.unplug()
     }
 
     func testVerifiedModel() throws {
         func result(_ command: String, _ output: String) -> DiagsCommandResult {
             DiagsSerialSession.result(command: command, rawOutput: command + "\r\n" + output + "\r\n[AB] :-) ")
         }
+        let gray = Self.grayWords, white = Self.whiteWords
         let delete = result("syscfg delete Mod#", "ERROR: key not found")   // never set: allowed to complain
         let add = result("syscfg add Mod# MQHW2", "")
-        XCTAssertEqual(try DiagsSerialSession.verifiedModel(from: [delete, add, result("syscfg print Mod#", "MQHW2")], expected: "MQHW2"), "MQHW2")
-        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: [delete, add, result("syscfg print Mod#", "ERROR: not found")], expected: "MQHW2")) { error in
+        let printModel = result("syscfg print Mod#", "MQHW2")
+        let writes = [delete, add,
+                      result("syscfg delete CLCG", "ERROR: key not found"), result("syscfg add CLCG \(gray)", ""),
+                      result("syscfg delete CLHS", "ERROR: key not found"), result("syscfg add CLHS \(gray)", "")]
+        let printGlass = result("syscfg print CLCG", "Key: CLCG = \(gray)")
+        let printHousing = result("syscfg print CLHS", gray)   // bare value, no `Key:` label
+
+        XCTAssertEqual(try DiagsSerialSession.verifiedModel(from: writes + [printModel, printGlass, printHousing], expected: "MQHW2"), "MQHW2")
+
+        // Mod#.
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: writes + [result("syscfg print Mod#", "ERROR: not found"), printGlass, printHousing], expected: "MQHW2")) { error in
             XCTAssertEqual(error as? DiagsSerialError, .modelNotVerified(expected: "MQHW2", found: ""))
         }
         XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: [delete, add], expected: "MQHW2"))
+
+        // CLCG / CLHS: missing, erroring, or holding the other colour.
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: [delete, add, printModel], expected: "MQHW2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError, .colorNotVerified(key: "CLCG", expected: gray, found: ""))
+        }
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: writes + [printModel, printGlass, result("syscfg print CLHS", "ERROR: not found")], expected: "MQHW2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError, .colorNotVerified(key: "CLHS", expected: gray, found: ""))
+        }
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: writes + [printModel, result("syscfg print CLCG", "Key: CLCG = \(white)"), printHousing], expected: "MQHW2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError, .colorNotVerified(key: "CLCG", expected: gray, found: white))
+        }
+        // Only the last word differing is still a different colour.
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: writes + [printModel, printGlass, result("syscfg print CLHS", white)], expected: "MQHW2")) { error in
+            XCTAssertEqual(error as? DiagsSerialError, .colorNotVerified(key: "CLHS", expected: gray, found: white))
+        }
+
+        // A named colour is the one checked, whatever the model number says.
+        XCTAssertThrowsError(try DiagsSerialSession.verifiedModel(from: writes + [printModel, printGlass, printHousing], expected: "MQHW2", color: .white)) { error in
+            XCTAssertEqual(error as? DiagsSerialError, .colorNotVerified(key: "CLCG", expected: white, found: gray))
+        }
+        // A model with no known colour, and none named: only Mod# is checked.
+        let custom = [result("syscfg delete Mod#", ""), result("syscfg add Mod# ZZZZ9", ""), result("syscfg print Mod#", "ZZZZ9")]
+        XCTAssertEqual(try DiagsSerialSession.verifiedModel(from: custom, expected: "ZZZZ9"), "ZZZZ9")
     }
 
 

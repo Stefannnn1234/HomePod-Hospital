@@ -112,6 +112,10 @@ final class AppModel: ObservableObject {
     /// read over the DIAGS shell — shown by the Reconfigure Model sheet.
     @Published var diagsCurrentModel: String?
     @Published var diagsCurrentRegion: String?
+    /// The unit's colour keys — `CLCG` (Cover Glass Color) and `CLHS`
+    /// (Housing Color) — as last read, keyed by SysCfg key. A key that hasn't
+    /// been read, or isn't set, is absent.
+    @Published var diagsCurrentColorKeys: [String: String] = [:]
     /// Outcome of the last model reconfiguration, for the sheet.
     @Published var diagsModelStatus: String?
     @Published var diagsModelFailed = false

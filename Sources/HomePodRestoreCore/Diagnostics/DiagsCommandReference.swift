@@ -320,7 +320,8 @@ public enum DiagsCommandReference {
             E("syscfg print SrNm", "One key. Binary keys print as space-separated 32-bit hex words."),
             E("syscfg print WCAL", "The Wi-Fi calibration blob — the factory Connectivity script reads it exactly this way."),
             E("syscfg add SrNm <serial>", "Writes one key. Writes flash."),
-            E("syscfg delete Mod#", "Removes one key. Writes flash. First step of changing the model number (Reconfigure Model): delete, then `syscfg add Mod# <model>`, then `syscfg print Mod#` to check."),
+            E("syscfg delete Mod#", "Removes one key. Writes flash. First step of a colour change (Reconfigure Model): delete, then `syscfg add Mod# <model>`, then `syscfg print Mod#` to check."),
+            E("syscfg add CLCG 0x00000001 0x00000000 0x00000000 0x00000002", "Cover Glass Color. The last word is the colour: 1 = Space Gray, 2 = White. Writes flash. A colour change needs Mod#, CLCG and CLHS (same value as CLCG) — confirmed on real hardware: after a firmware restore the iOS setup prompt shows the new colour."),
             E("syscfg init", "Creates an EMPTY SysCfg. Only for a brand-new NAND: on a working unit this erases its identity and calibration."),
           ],
           risk: .writesFlash, source: .projectNotes,
@@ -714,30 +715,48 @@ public enum DiagsCommandReference {
 
 // MARK: - HomePod model variants (colour)
 //
-// The colour of a 1st-gen HomePod is carried by its model number (SysCfg
-// `Mod#`): MQHW2 is Space Gray, MQHV2 is White. The region (LL/A, X/A, …) is
-// normally a separate key (`Regn`), but a model string that carries a suffix
-// ("MQHW2LL/A") keeps it when the colour is changed.
+// The colour of a 1st-gen HomePod is carried by THREE SysCfg keys, and all
+// three have to change for the unit to be a different colour everywhere:
+//
+//   Mod#  model number          MQHW2 = Space Gray, MQHV2 = White
+//   CLCG  Cover Glass Color     four 32-bit words; the LAST is the colour code
+//   CLHS  Housing Color         same format and same codes as CLCG
+//
+//   Space Gray  0x00000001 0x00000000 0x00000000 0x00000001
+//   White       0x00000001 0x00000000 0x00000000 0x00000002
+//
+// Confirmed on real hardware: with all three written and the firmware
+// restored, the iOS setup prompt shows the new colour. Writing `Mod#` alone
+// only changes the model number shown in Settings.
+//
+// The region (LL/A, X/A, …) is normally a separate key (`Regn`), but a model
+// string that carries a suffix ("MQHW2LL/A") keeps it when the colour is
+// changed.
 
-/// One colour of the 1st-gen HomePod and the model number that goes with it.
+/// One colour of the 1st-gen HomePod: the model number and the CLCG / CLHS
+/// colour code that go with it.
 public struct HomePodModelVariant: Sendable, Equatable, Identifiable {
     /// The model number without a region suffix, e.g. "MQHW2".
     public let modelBase: String
     /// "Space Gray" or "White".
     public let color: String
+    /// The colour code — the last word of `CLCG` and `CLHS`.
+    /// 1 = Space Gray, 2 = White.
+    public let colorCode: UInt32
     /// SF Symbol for the colour swatch.
     public let sfSymbol: String
 
     public var id: String { modelBase }
 
-    public init(modelBase: String, color: String, sfSymbol: String) {
+    public init(modelBase: String, color: String, colorCode: UInt32, sfSymbol: String) {
         self.modelBase = modelBase
         self.color = color
+        self.colorCode = colorCode
         self.sfSymbol = sfSymbol
     }
 
-    public static let spaceGray = HomePodModelVariant(modelBase: "MQHW2", color: "Space Gray", sfSymbol: "circle.fill")
-    public static let white = HomePodModelVariant(modelBase: "MQHV2", color: "White", sfSymbol: "circle")
+    public static let spaceGray = HomePodModelVariant(modelBase: "MQHW2", color: "Space Gray", colorCode: 1, sfSymbol: "circle.fill")
+    public static let white = HomePodModelVariant(modelBase: "MQHV2", color: "White", colorCode: 2, sfSymbol: "circle")
 
     public static let all = [spaceGray, white]
 
@@ -755,5 +774,33 @@ public struct HomePodModelVariant: Sendable, Equatable, Identifiable {
         guard let currentVariant = variant(for: trimmed) else { return target.modelBase }
         // Only the leading base is replaced; the suffix is kept as it is.
         return target.modelBase + String(trimmed.dropFirst(currentVariant.modelBase.count))
+    }
+
+    // MARK: CLCG / CLHS
+
+    /// The value of `CLCG` (Cover Glass Color) and of `CLHS` (Housing Color)
+    /// for this colour: three fixed words, then the colour code.
+    public var clcgValue: [UInt32] { [0x00000001, 0x00000000, 0x00000000, colorCode] }
+
+    /// `clcgValue` as it goes on a `syscfg add CLCG …` / `syscfg add CLHS …`
+    /// line: "0x00000001 0x00000000 0x00000000 0x00000002".
+    public var clcgArgs: String {
+        clcgValue.map { "0x" + Self.hex8($0) }.joined(separator: " ")
+    }
+
+    /// The colour code alone, as DIAGS prints it: "0x00000002".
+    public var colorCodeHex: String { "0x" + Self.hex8(colorCode) }
+
+    /// The variant a `CLCG` / `CLHS` value belongs to, going by its last word
+    /// — the colour code. `nil` for an empty value or a code that isn't known.
+    public static func variant(forColorWords words: [UInt32]) -> HomePodModelVariant? {
+        guard let code = words.last else { return nil }
+        return all.first { $0.colorCode == code }
+    }
+
+    /// Eight upper-case hex digits, without Foundation's `String(format:)`.
+    private static func hex8(_ word: UInt32) -> String {
+        let digits = String(word, radix: 16, uppercase: true)
+        return String(repeating: "0", count: max(0, 8 - digits.count)) + digits
     }
 }
