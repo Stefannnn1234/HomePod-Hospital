@@ -54,7 +54,7 @@ struct NicotineUIState {
     var importMessage: String?
     var importFailed = false
 
-    /// "Preparing the release boot loaders…" while prep-release-iboot.sh runs.
+    /// "Building the release boot loaders…" while ReleaseIBootBuilder runs.
     var prepareBusy = false
     var prepareMessage: String?
     var prepareFailed = false
@@ -124,11 +124,40 @@ extension AppModel {
             && fm.fileExists(atPath: dir.appendingPathComponent("iBEC.img4").path)
     }
 
-    /// The release pair to hand the booter, or nil (toggle off, or not prepared).
+    /// The release pair to boot from, or nil when they aren't built yet. The app
+    /// boots ONLY on these; the dev loaders are never sent.
     var nicotineReleaseIBootPair: (iBSS: URL, iBEC: URL)? {
-        guard nicotineUseReleaseIBoot, nicotineHasReleaseIBoot, let dir = nicotineReleaseIBootDir else { return nil }
+        guard nicotineHasReleaseIBoot, let dir = nicotineReleaseIBootDir else { return nil }
         return (dir.appendingPathComponent("iBSS.img4"), dir.appendingPathComponent("iBEC.img4"))
     }
+
+    /// The tools the in-app builder needs: gaster + img4tool (located like every
+    /// other tool), hBootPatcher + img4 (bundled in Resources/bin by a
+    /// BUNDLE_TOOLS build), and the generic A8 APTicket in Resources.
+    private func nicotineReleaseTools() -> ReleaseIBootBuilder.Tools? {
+        let fm = FileManager.default
+        func helper(_ name: String) -> URL? {
+            if let dir = ToolLocator.bundledToolsDirectory {
+                let u = dir.appendingPathComponent(name); if fm.isExecutableFile(atPath: u.path) { return u }
+            }
+            let user = ToolLocator.userToolsDirectory.appendingPathComponent(name)
+            if fm.isExecutableFile(atPath: user.path) { return user }
+            for pth in ToolEnvironment.searchPaths {
+                let u = URL(fileURLWithPath: pth).appendingPathComponent(name)
+                if fm.isExecutableFile(atPath: u.path) { return u }
+            }
+            return nil
+        }
+        guard let gaster = nicotineTool(.gaster),
+              let img4tool = ToolLocator.locate(.img4tool)?.url,
+              let hb = helper("hBootPatcher"), let img4 = helper("img4"),
+              let shsh = Bundle.main.resourceURL?.appendingPathComponent("apticket-0x7000.shsh"),
+              fm.fileExists(atPath: shsh.path) else { return nil }
+        return .init(gaster: gaster, hBootPatcher: hb, img4: img4, img4tool: img4tool, apticket: shsh)
+    }
+
+    /// The builder's tools that this app is missing (for the prepare blocker).
+    var nicotineReleaseToolsMissing: Bool { nicotineReleaseTools() == nil }
 
     /// Why the release boot loaders can't be prepared right now, in the user's
     /// words; nil when preparation can start. (The script needs the pod in DFU
@@ -136,6 +165,9 @@ extension AppModel {
     func nicotinePrepareBlocker() -> String? {
         if nicotineReleaseIBootDir == nil {
             return "Choose or import a Nicotine payload first — the release boot loaders are kept next to it."
+        }
+        if nicotineReleaseToolsMissing {
+            return "This copy of HomePod Hospital wasn't built with the boot-loader tools. Rebuild it with BUNDLE_TOOLS=1 (it bundles hBootPatcher and img4)."
         }
         if nicotine.prepareBusy { return "Preparation is already running." }
         if nicotine.isBusy { return "Wait for the current boot to finish first." }
@@ -150,7 +182,7 @@ extension AppModel {
         return nil
     }
 
-    /// Build the release boot loaders by running prep-release-iboot.sh. Streams
+    /// Build the release boot loaders in-app (ReleaseIBootBuilder). Streams
     /// its output into the boot log; on success the "Boot with Apple release
     /// loaders" option turns on by itself.
     func prepareNicotineReleaseIBoot() {
@@ -160,21 +192,21 @@ extension AppModel {
             nicotine.prepareMessage = why
             return
         }
-        guard let dir = nicotineReleaseIBootDir else { return }
+        guard let dir = nicotineReleaseIBootDir, let tools = nicotineReleaseTools() else { return }
         nicotine.prepareBusy = true
         nicotine.prepareFailed = false
         nicotine.prepareMessage = nil
-        appendNicotineLog("Preparing Apple release boot loaders into \(dir.path)")
-        appendNicotineLog("(Downloads iBSS/iBEC from Apple's audioOS 16.4, decrypts them on this HomePod, patches and wraps them. First time on a Mac needs Homebrew ipsw, libirecovery and make.)")
+        appendNicotineLog("Building the release boot loaders into \(dir.path)")
+        appendNicotineLog("(Downloads iBSS/iBEC from Apple's audioOS 16.4, decrypts them on this HomePod, patches and signs them — all with tools inside the app.)")
 
-        let preparer = ReleaseIBootPreparer(outputDir: dir)
+        let builder = ReleaseIBootBuilder(outputDir: dir, tools: tools)
         nicotinePrepareTask?.cancel()
         nicotinePrepareTask = Task { [weak self] in
             var message = ""
             var failed = false
             do {
-                _ = try await preparer.run(onLog: { line in Task { @MainActor in self?.appendNicotineLog("  " + line) } })
-                message = "Release boot loaders are ready. The boot will use them."
+                _ = try await builder.run(onLog: { line in Task { @MainActor in self?.appendNicotineLog("  " + line) } })
+                message = "Release boot loaders are ready. Boot Nicotine now."
             } catch {
                 failed = true
                 message = error.localizedDescription
@@ -185,7 +217,6 @@ extension AppModel {
                 self.nicotine.prepareBusy = false
                 self.nicotine.prepareFailed = bad
                 self.nicotine.prepareMessage = text
-                if !bad { self.nicotineUseReleaseIBoot = true }
             }
         }
     }
@@ -277,6 +308,9 @@ extension AppModel {
         if dfu.isEmpty { return "Put the HomePod in DFU mode: upside down, adapter attached, USB connected, then plug in power." }
         if devices.count > 1 { return "Connect only the one HomePod you want to boot. This boot can't choose between several." }
         if let ib = dfu[0].iboot, !ib.isA8 { return "This isn't a 1st-gen HomePod (A8 chip)." }
+        if !nicotineHasReleaseIBoot {
+            return "Build the boot loaders first: open the \"Boot loaders\" card below and click \"Build release boot loaders\". It's a one-time step per Mac."
+        }
         return nil
     }
 
@@ -307,9 +341,7 @@ extension AppModel {
         if let manifest = payload.manifest {
             st.log.append("Payload: \(manifest.summary). Checking its \(manifest.entries.count) files against the MANIFEST first.")
         }
-        st.log.append(nicotineReleaseIBootPair != nil
-                      ? "Boot loaders: Apple release (from release-iboot)."
-                      : "Boot loaders: patched development iBSS/iBEC.")
+        st.log.append("Boot loaders: Apple release (built from audioOS 16.4).")
         st.importMessage = nicotine.importMessage
         st.importFailed = nicotine.importFailed
         nicotine = st

@@ -44,7 +44,6 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH/HomePodRestore" "$APP/Contents/MacOS/HomePodRestore"
 cp "$ROOT/scripts/setup-tools.sh" "$APP/Contents/Resources/setup-tools.sh"
 cp "$ROOT/scripts/build-ssh-ramdisk.sh" "$APP/Contents/Resources/build-ssh-ramdisk.sh"
-cp "$ROOT/scripts/prep-release-iboot.sh" "$APP/Contents/Resources/prep-release-iboot.sh"
 # Generic A8 (CPID 0x7000) APTicket for checkm8 boot of the SSH ramdisk.
 [ -f "$ROOT/scripts/apticket-0x7000.shsh" ] && cp "$ROOT/scripts/apticket-0x7000.shsh" "$APP/Contents/Resources/apticket-0x7000.shsh"
 # Ship the SSH-ramdisk overlay (dropbear + host keys + launch item) if assembled.

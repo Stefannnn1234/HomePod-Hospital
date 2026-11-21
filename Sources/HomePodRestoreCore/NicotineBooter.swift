@@ -55,11 +55,11 @@ public struct NicotineLayout: Sendable, Equatable {
     /// m1n1 + Linux kernel + device tree + initramfs, tagged `rkrn` (PAYLOAD=linux).
     public var kernelCache: URL { img4Dir.appendingPathComponent("RestoreKernelCache_m1n1-linux.img4") }
 
-    /// The release boot loaders built from Apple's own files, when they are
-    /// prepared next to the image folder (prep-release-iboot.sh writes them
-    /// here). A payload inside the app bundle or in Application Support can't be
-    /// written into, so the preparer puts them elsewhere and passes that folder
-    /// to the booter; this is only the default.
+    /// The release boot loaders built from Apple's own files (ReleaseIBootBuilder,
+    /// or prep-release-iboot.sh for terminal users), kept next to the image
+    /// folder. A payload inside the app bundle or in Application Support can't be
+    /// written into, so the builder puts them elsewhere and passes that folder to
+    /// the booter; this is only the default.
     public var releaseIBootDir: URL { root.appendingPathComponent("release-iboot", isDirectory: true) }
     /// The two files boot-linux.sh looks for with IBOOT_DIR set: plain names,
     /// not the "-dev-hoolock" ones. `dir` overrides `releaseIBootDir`.

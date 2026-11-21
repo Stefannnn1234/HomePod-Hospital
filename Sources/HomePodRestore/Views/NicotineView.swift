@@ -211,11 +211,7 @@ struct NicotineView: View {
             Label("Boot loaders", systemImage: "cpu").font(.headline)
             let ready = model.nicotineHasReleaseIBoot
             if ready {
-                Toggle("Boot with Apple release boot loaders", isOn: $model.nicotineUseReleaseIBoot)
-                    .font(.callout)
-                Label(model.nicotineUseReleaseIBoot
-                      ? "Ready. The boot sends the release iBSS/iBEC built from Apple's audioOS 16.4."
-                      : "Ready, but off: the boot still uses the patched development loaders.",
+                Label("Ready. Built from Apple's audioOS 16.4 — this HomePod will boot from them.",
                       systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green).font(.callout).fixedSize(horizontal: false, vertical: true)
                 if let dir = model.nicotineReleaseIBootDir {
@@ -223,21 +219,21 @@ struct NicotineView: View {
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text("By default Nicotine boots on Apple development boot loaders, which shouldn't be handed out. You can build release boot loaders from Apple's own audioOS 16.4 update — downloaded, decrypted on this HomePod, patched and wrapped — and boot from those instead.")
+                Text("Nicotine boots on boot loaders built from Apple's own audioOS 16.4 update — downloaded, decrypted on this HomePod, patched and signed, all inside the app. Build them once on this Mac before the first boot.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
             if state.prepareBusy {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Preparing the release boot loaders… watch the log below.").font(.callout)
+                    Text("Building the release boot loaders… watch the log below.").font(.callout)
                     Spacer()
                     Button("Stop") { model.cancelNicotinePrepare() }.controlSize(.small)
                 }
             } else {
                 let blocker = model.nicotinePrepareBlocker()
                 HStack {
-                    Button(ready ? "Rebuild release boot loaders…" : "Prepare release boot loaders…") {
+                    Button(ready ? "Rebuild release boot loaders…" : "Build release boot loaders…") {
                         model.prepareNicotineReleaseIBoot()
                     }
                     .disabled(blocker != nil)
@@ -249,7 +245,7 @@ struct NicotineView: View {
                 if let blocker {
                     Text(blocker).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("Needs the HomePod in DFU and, the first time on this Mac, Homebrew ipsw, libirecovery and make (brew install blacktop/tap/ipsw libirecovery make). It runs HoolockLinux's own tool; it takes a few minutes.")
+                    Text("Needs the HomePod in DFU. It downloads about 1 MB from Apple, unlocks the HomePod and builds the two files — a minute or two. Nothing is written to the HomePod.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }

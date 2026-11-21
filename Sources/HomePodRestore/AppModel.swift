@@ -144,12 +144,6 @@ final class AppModel: ObservableObject {
     @Published var nicotineAutoRestore: Bool {
         didSet { UserDefaults.standard.set(nicotineAutoRestore, forKey: "nicotineAutoRestore") }
     }
-    /// Boot with Apple's release boot loaders (prepared from the audioOS 16.4
-    /// update) instead of the patched development pair. Only takes effect when
-    /// the two files are prepared; otherwise the boot uses the dev pair.
-    @Published var nicotineUseReleaseIBoot: Bool {
-        didSet { UserDefaults.standard.set(nicotineUseReleaseIBoot, forKey: "nicotineUseReleaseIBoot") }
-    }
     /// Bumped to make RootView switch to the Nicotine page.
     @Published var nicotineRevealToken = 0
     var nicotineTask: Task<Void, Never>?
@@ -178,7 +172,6 @@ final class AppModel: ObservableObject {
         nicotineFolderPath = UserDefaults.standard.string(forKey: "nicotineFolder")
             ?? NicotineLayout.discover()?.root.path ?? ""
         nicotineAutoRestore = UserDefaults.standard.object(forKey: "nicotineAutoRestore") as? Bool ?? true
-        nicotineUseReleaseIBoot = UserDefaults.standard.bool(forKey: "nicotineUseReleaseIBoot")
         if let raw = UserDefaults.standard.string(forKey: "syscfgBootMode"),
            let m = SysCfgBootMode(rawValue: raw) {
             syscfgBootMode = m

@@ -118,16 +118,46 @@ final class ReleaseIBootTests: XCTestCase {
         }
     }
 
-    func testPreparerReportsScriptFailureAndOutput() async throws {
-        // A stand-in script: no RELEASE_IBOOT_OUT output, non-zero exit → prepFailed with the tail.
+    // MARK: the in-app builder
+
+    func testBootLoaderPathsFromBuildManifest() throws {
+        // A minimal BuildManifest.plist with one build identity listing iBSS/iBEC.
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+          <key>BuildIdentities</key>
+          <array><dict>
+            <key>Manifest</key><dict>
+              <key>iBSS</key><dict><key>Info</key><dict><key>Path</key>
+                <string>Firmware/dfu/iBSS.b238ap.RELEASE.im4p</string></dict></dict>
+              <key>iBEC</key><dict><key>Info</key><dict><key>Path</key>
+                <string>Firmware/dfu/iBEC.b238ap.RELEASE.im4p</string></dict></dict>
+            </dict>
+          </dict></array>
+        </dict></plist>
+        """
+        let paths = ReleaseIBootBuilder.bootLoaderPaths(buildManifest: Data(xml.utf8))
+        XCTAssertEqual(paths?.iBSS, "Firmware/dfu/iBSS.b238ap.RELEASE.im4p")
+        XCTAssertEqual(paths?.iBEC, "Firmware/dfu/iBEC.b238ap.RELEASE.im4p")
+
+        // A manifest with no iBSS/iBEC → nil.
+        XCTAssertNil(ReleaseIBootBuilder.bootLoaderPaths(buildManifest: Data("<plist><dict/></plist>".utf8)))
+    }
+
+    func testBuilderReportsMissingTool() async throws {
         let out = tmp.appendingPathComponent("release-iboot", isDirectory: true)
-        let fakeScript = try install("prep-release-iboot.sh", "echo line-one; echo last-line; exit 7")
-        let prep = ReleaseIBootPreparer(outputDir: out)
-        // run the script directly (locateScript() looks in the bundle; here we drive bash ourselves)
-        let r = ProcessRunner(executable: URL(fileURLWithPath: "/bin/bash"), arguments: [fakeScript.path],
-                              environment: ["RELEASE_IBOOT_OUT": out.path, "PATH": "/usr/bin:/bin"])
-        let result = try await r.run(onLine: { _ in })
-        XCTAssertEqual(result.exitCode, 7)
-        XCTAssertFalse(prep.isPrepared)                        // nothing was written
+        let bogus = tmp.appendingPathComponent("nope")           // not executable
+        let tools = ReleaseIBootBuilder.Tools(gaster: bogus, hBootPatcher: bogus, img4: bogus,
+                                              img4tool: bogus, apticket: bogus)
+        let builder = ReleaseIBootBuilder(outputDir: out, tools: tools,
+                                          otaURLOverride: URL(string: "https://example.invalid/x.zip")!)
+        do {
+            _ = try await builder.run(onLog: { _ in })
+            XCTFail("should fail: the tools aren't there")
+        } catch let e as ReleaseIBootBuilder.Failure {
+            guard case .toolMissing = e else { return XCTFail("wrong error: \(e)") }
+        }
+        XCTAssertFalse(builder.isPrepared)
     }
 }

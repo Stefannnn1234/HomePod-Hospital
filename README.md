@@ -34,7 +34,12 @@ tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
   the proven `boot-linux.sh` sequence natively, waits for the pod's USB network, opens its web UI
   and saves / restores its settings (automatically after a boot, if you like). The boot files come
   from a Nicotine payload: built into the app (`BUNDLE_NICOTINE=1`), imported from a zip, or your
-  own image folder; a payload is checksum-verified before every boot. See
+  own image folder; a payload is checksum-verified before every boot.
+- **Boot loaders built from Apple's own files**: Nicotine boots **only** on boot loaders built from
+  Apple's release audioOS 16.4 — never Apple's development iBoot. A one-time **Build release boot
+  loaders** step (pod in DFU) downloads iBSS/iBEC from Apple, decrypts them on the HomePod with
+  `gaster`, patches them with `hBootPatcher` and signs them with `img4` — all with tools inside the
+  app, no Homebrew or terminal. The Boot button stays blocked until they exist. See
   [docs/nicotine-boot.md](docs/nicotine-boot.md).
 - **Errors explained**: every message in the guide's Troubleshooting section is mapped to a
   title, explanation and "what to try", with hardware failures flagged as such. "Copy support info"
@@ -56,9 +61,11 @@ HOMEPOD_NET_TESTS=1 swift test          # + live partial-zip read of Apple's App
 ```
 
 `BUNDLE_TOOLS=1` needs the tools installed on the build Mac (guide steps or Setup → Install) and
-`brew install dylibbundler`. Bundled tools are for the build Mac's CPU (`Resources/bin/ARCHS`);
-on other CPUs the app falls back to installed tools. With bundled tools, end users don't need
-Homebrew at all to restore.
+`brew install dylibbundler`. It also builds `hBootPatcher` (from HoolockLinux's `remote_boot`,
+pinned) and bundles `img4`, so the in-app **Build release boot loaders** step works on a fresh Mac
+with no Homebrew. Bundled tools are for the build Mac's CPU (`Resources/bin/ARCHS`); on other CPUs
+the app falls back to installed tools. With bundled tools, end users don't need Homebrew at all to
+restore or to boot Nicotine.
 
 `BUNDLE_NICOTINE=1` copies a Nicotine payload (about 44 MB) from `NICOTINE_PAYLOAD_DIR`, default
 `~/Downloads/diagsstuffnic/linux-homepod/public`, into `Contents/Resources/Nicotine` after checking
@@ -122,8 +129,10 @@ Sources/HomePodRestoreCore/   Foundation-only logic (builds & tests on Linux too
   Downloader.swift            resumable downloads
   NicotineBooter.swift        Nicotine (Linux) boot = boot-linux.sh step for step, pod check, settings
   NicotinePayload.swift       where the boot files come from: lookup order, MANIFEST check, import
+  ReleaseIBoot.swift          builds Nicotine's boot loaders in-app from Apple's audioOS 16.4
 Sources/HomePodRestore/       SwiftUI app, IOKit USB monitor
-scripts/                      build-app.sh, bundle-tools.sh, setup-tools.sh, make-nicotine-payload.sh, gaster patch
+scripts/                      build-app.sh, bundle-tools.sh (also builds hBootPatcher, bundles img4),
+                              setup-tools.sh, make-nicotine-payload.sh, prep-release-iboot.sh, gaster patch
 Distribution/manifest.json    remote catalog to host on nicsfix.com
 ```
 

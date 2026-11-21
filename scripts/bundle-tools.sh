@@ -40,6 +40,21 @@ else
   echo "         Boot Nicotine / SSH ramdisk / Factory DIAGS will ask the user to install tools."
 fi
 
+echo "==> Building hBootPatcher + bundling img4 (for the in-app release boot-loader builder)"
+# hBootPatcher comes from HoolockLinux's remote_boot (MIT); pinned, built once.
+HB_REV=e254a58b7d7c68c9e34a407a0beb0aab4861a6b6
+MAKE="$(command -v gmake || command -v make)"
+if [ ! -d "$WORK/remote_boot/.git" ]; then
+  git -c url."https://github.com/".insteadOf="git@github.com:" clone https://github.com/HoolockLinux/remote_boot "$WORK/remote_boot"
+fi
+( cd "$WORK/remote_boot" && git fetch -q origin && git checkout -q "$HB_REV"   && git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --recursive vendor/hBootPatcher   && "$MAKE" -C vendor/hBootPatcher > "$WORK/hbootpatcher-build.log" 2>&1 )   && cp "$WORK/remote_boot/vendor/hBootPatcher/hBootPatcher" "$BIN/hBootPatcher"   || { tail -20 "$WORK/hbootpatcher-build.log" 2>/dev/null; echo "WARNING: hBootPatcher didn't build — the in-app release boot-loader builder will be disabled."; }
+# img4 (payload wrap + sign): from PATH, then a local SSHRD_Script checkout.
+IMG4="$(command -v img4 || true)"
+[ -z "$IMG4" ] && [ -x "$HOME/homepod/SSHRD_Script/Darwin/img4" ] && IMG4="$HOME/homepod/SSHRD_Script/Darwin/img4"
+if [ -n "$IMG4" ]; then cp "$IMG4" "$BIN/img4"; echo "  + img4 ($IMG4)"; else
+  echo "WARNING: img4 not found (PATH or ~/homepod/SSHRD_Script/Darwin). The in-app release boot-loader builder needs it."
+fi
+
 echo "==> Copying SysCfg / builder tools (img4tool, ra1nsn0w, tsschecker, iproxy, sshpass)"
 for t in img4tool ra1nsn0w tsschecker iproxy sshpass; do
   P="$(command -v "$t" || true)"
@@ -49,7 +64,7 @@ chmod +x "$BIN"/*
 
 echo "==> Bundling libraries"
 ARGS=()
-for t in "$BIN"/idevicerestore "$BIN"/irecovery "$BIN"/img4tool "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
+for t in "$BIN"/idevicerestore "$BIN"/irecovery "$BIN"/img4tool "$BIN"/img4 "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
   [ -f "$t" ] && ARGS+=(-x "$t")
 done
 SRCH=(-s "$(brew --prefix)/lib" -s /usr/local/lib)
@@ -61,7 +76,7 @@ dylibbundler -of -b -cd "${ARGS[@]}" -d "$FW" -p @executable_path/../../Framewor
 # Record the CPU architecture(s) so the app ignores these on other CPUs.
 lipo -archs "$BIN/idevicerestore" > "$BIN/ARCHS"
 echo "Bundled tools for: $(cat "$BIN/ARCHS")"
-for t in "$BIN"/gaster "$BIN"/irecovery "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
+for t in "$BIN"/gaster "$BIN"/irecovery "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/img4 "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
   [ -f "$t" ] || continue
   LEAKS="$(otool -L "$t" | tail -n +2 | grep -vE "/usr/lib/|/System/|@executable_path" || true)"
   if [ -n "$LEAKS" ]; then echo "WARNING: $(basename "$t") still links outside the bundle:"; echo "$LEAKS"; fi
