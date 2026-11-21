@@ -110,14 +110,28 @@ public final class ReleaseIBootBuilder: @unchecked Sendable {
     /// iBSS/iBEC paths inside the OTA, from its BuildManifest: the first build
     /// identity that lists both (there is one board, b238ap).
     public static func bootLoaderPaths(buildManifest: Data) -> (iBSS: String, iBEC: String)? {
-        guard let plist = try? PropertyListSerialization.propertyList(from: buildManifest, format: nil) as? [String: Any],
-              let ids = plist["BuildIdentities"] as? [[String: Any]] else { return nil }
-        for id in ids {
-            guard let manifest = id["Manifest"] as? [String: Any] else { continue }
-            func path(_ key: String) -> String? {
-                ((manifest[key] as? [String: Any])?["Info"] as? [String: Any])?["Path"] as? String
+        if let plist = try? PropertyListSerialization.propertyList(from: buildManifest, format: nil) as? [String: Any],
+           let ids = plist["BuildIdentities"] as? [[String: Any]] {
+            for id in ids {
+                guard let manifest = id["Manifest"] as? [String: Any] else { continue }
+                func path(_ key: String) -> String? {
+                    ((manifest[key] as? [String: Any])?["Info"] as? [String: Any])?["Path"] as? String
+                }
+                if let s = path("iBSS"), let e = path("iBEC") { return (s, e) }
             }
-            if let s = path("iBSS"), let e = path("iBEC") { return (s, e) }
+        }
+        // Fallback: scan the raw manifest for the two path strings, the way
+        // remote_boot's awk does (some OTA manifests nest differently).
+        if let text = String(data: buildManifest, encoding: .utf8) {
+            func firstPath(_ needle: String) -> String? {
+                for chunk in text.components(separatedBy: "<string>").dropFirst() {
+                    guard let end = chunk.range(of: "</string>") else { continue }
+                    let v = String(chunk[..<end.lowerBound])
+                    if v.contains(needle) && v.hasSuffix(".im4p") { return v }
+                }
+                return nil
+            }
+            if let s = firstPath("iBSS"), let e = firstPath("iBEC") { return (s, e) }
         }
         return nil
     }
@@ -203,10 +217,22 @@ public final class ReleaseIBootBuilder: @unchecked Sendable {
                                      progress: @escaping @Sendable (Double?) -> Void) async throws -> (iBSS: URL, iBEC: URL) {
         let src = HTTPRangeSource(url: url)
         let dir = try await ZipDirectory.read(from: src)
-        guard let bm = dir.entry(named: "BuildManifest.plist") else { throw Failure.bootLoaderPathsNotFound }
+        // audioOS OTAs keep BuildManifest.plist and the boot files under
+        // AssetData/boot/; a full IPSW keeps them at the root. Match either.
+        guard let bm = dir.entries.first(where: { $0.name.hasSuffix("BuildManifest.plist") }) else {
+            throw Failure.bootLoaderPathsNotFound
+        }
+        let prefix = String(bm.name.dropLast("BuildManifest.plist".count))   // "" or "AssetData/boot/"
         let manifest = try await ZipDirectory.contents(of: bm, in: src)
-        guard let paths = Self.bootLoaderPaths(buildManifest: manifest),
-              let bssEntry = dir.entry(named: paths.iBSS), let becEntry = dir.entry(named: paths.iBEC) else {
+        guard let paths = Self.bootLoaderPaths(buildManifest: manifest) else { throw Failure.bootLoaderPathsNotFound }
+        // The manifest's path is relative to the same prefix; fall back to a
+        // suffix match if the layout differs.
+        func zipEntry(_ rel: String) -> ZipEntry? {
+            dir.entry(named: prefix + rel) ?? dir.entry(named: rel)
+                ?? dir.entries.first { $0.name.hasSuffix("/" + rel) }
+                ?? dir.entries.first { $0.name.hasSuffix("/" + (rel as NSString).lastPathComponent) }
+        }
+        guard let bssEntry = zipEntry(paths.iBSS), let becEntry = zipEntry(paths.iBEC) else {
             throw Failure.bootLoaderPathsNotFound
         }
         let outBSS = work.appendingPathComponent("iBSS.im4p")
