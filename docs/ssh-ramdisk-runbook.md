@@ -11,7 +11,8 @@ prove a non-destructive read before trusting the write on a repair unit.
    `img4tool`, `tsschecker`, `ldid`, `irecovery`, `iproxy`, and `sshpass`.
 2. **SSH overlay** — already assembled into `scripts/ssh-ramdisk-overlay/` from
    SSHRD_Script's `atvssh` (dropbear + `restored_external` launcher, host keys).
-   Copy it to `~/Library/Application Support/HomePod Restore/ssh-ramdisk-overlay/`
+   Copy it to `~/Library/Application Support/HomePod Hospital/ssh-ramdisk-overlay/`
+   (`…/HomePod Restore/…` on a Mac set up before the app was renamed)
    (or rebuild the app, which bundles it).
 
 ## 1. Build the SSH ramdisk (once)
@@ -19,7 +20,7 @@ prove a non-destructive read before trusting the write on a repair unit.
 Advanced on → known-good pod in DFU → its card → Check health → **Read SysCfg** →
 **Build SSH ramdisk**. It pulls the Apple TV donor ramdisk, injects the overlay
 (`img4tool -e` → mount → overlay → `img4tool -c -t rdsk`), and caches
-`~/Library/Application Support/HomePod Restore/SSHRamdisk/sshrd-<build>.img4`.
+`~/Library/Application Support/HomePod Hospital/SSHRamdisk/sshrd-<build>.img4`.
 
 ## 2. What's CONFIRMED (coded) vs. still OPEN
 

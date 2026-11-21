@@ -174,7 +174,16 @@ struct ConnectionGuide: View {
                         detail: "Use a port directly on your Mac if you can (avoid unpowered hubs). If macOS asks to \"Allow accessory to connect\", click Allow.")
                 StepRow(number: 4, icon: "powerplug.fill",
                         title: "Plug in HomePod power — last",
-                        detail: "Order matters: USB first, then power. The HomePod starts in DFU mode and shows up here.")
+                        detail: "Order matters: USB first, then power. The HomePod boots into DFU mode while upside down and shows up here.")
+                HStack(spacing: 8) {
+                    Spacer().frame(width: 42)
+                    Label("Wait for your Mac to detect DFU mode, then:", systemImage: "clock.fill")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.orange)
+                }
+                StepRow(number: 5, icon: "arrow.up.circle.fill",
+                        title: "Flip it right-side up",
+                        detail: "The HomePod reboots during restore. If it's still upside down, it re-enters DFU instead of continuing. Flip it right-side up now — the USB adapter and cable will stay connected.")
             }
         }
     }

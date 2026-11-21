@@ -2,10 +2,28 @@ import Foundation
 
 /// Where the app keeps its files.
 public enum AppPaths {
+    /// The app's folder name under Application Support and Logs.
+    public static let folderName = "HomePod Hospital"
+    /// What it was called before the app was renamed.
+    public static let legacyFolderName = "HomePod Restore"
+
+    /// `base/HomePod Hospital`, except on a Mac that already has
+    /// `base/HomePod Restore` from before the rename: that folder keeps being
+    /// used as it is. Nothing is moved, because the firmware index and the
+    /// saved firmware selection hold absolute paths into it and the downloads
+    /// are several GB. New installs get the new name.
+    static func folder(in base: URL) -> URL {
+        let current = base.appendingPathComponent(folderName, isDirectory: true)
+        let legacy = base.appendingPathComponent(legacyFolderName, isDirectory: true)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: current.path) && fm.fileExists(atPath: legacy.path) { return legacy }
+        return current
+    }
+
     public static var support: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("HomePod Restore", isDirectory: true)
+        return folder(in: base)
     }
     public static var firmware: URL { support.appendingPathComponent("Firmware", isDirectory: true) }
     /// Shared idevicerestore cache (-C). The unpacked root filesystem lives
@@ -15,7 +33,7 @@ public enum AppPaths {
     public static var logs: URL {
         let lib = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library")
-        return lib.appendingPathComponent("Logs/HomePod Restore", isDirectory: true)
+        return folder(in: lib.appendingPathComponent("Logs", isDirectory: true))
     }
 
     public static func ensure() {

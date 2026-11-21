@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# HomePod Restore — tool installer
+# HomePod Hospital — tool installer
 #
 # Installs the same tools as the homepod-restore guide
 # (https://github.com/UnbendableStraw/homepod-restore), plus a copy of gaster
@@ -10,14 +10,19 @@
 #   setup-tools.sh            restore tools only
 #   setup-tools.sh --builder  also the tools for building your own .ipsw
 #
-# The HomePod Restore app opens this in Terminal for you. It's safe to run
+# The HomePod Hospital app opens this in Terminal for you. It's safe to run
 # again any time — it repairs/updates what's there.
 
 BUILDER=0
 for a in "$@"; do [ "$a" = "--builder" ] && BUILDER=1; done
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SUPPORT="$HOME/Library/Application Support/HomePod Restore"
+SUPPORT="$HOME/Library/Application Support/HomePod Hospital"
+# A Mac set up before the app was renamed keeps its "HomePod Restore" folder
+# (the app does the same, see AppPaths in FirmwareLibrary.swift).
+if [ ! -d "$SUPPORT" ] && [ -d "$HOME/Library/Application Support/HomePod Restore" ]; then
+  SUPPORT="$HOME/Library/Application Support/HomePod Restore"
+fi
 SRC="$SUPPORT/src"
 BIN="$SUPPORT/bin"
 PATCH="${GASTER_PATCH:-$HERE/patches/gaster-ecid.patch}"
@@ -35,9 +40,9 @@ cat <<'BANNER'
  | | | | ___  _ __ ___   ___|  _ \ ___   __| |
  | |_| |/ _ \| '_ ` _ \ / _ \ |_) / _ \ / _` |
  |  _  | (_) | | | | | |  __/  __/ (_) | (_| |
- |_| |_|\___/|_| |_| |_|\___|_|   \___/ \__,_|  Restore — tool setup
+ |_| |_|\___/|_| |_| |_|\___|_|   \___/ \__,_|  Hospital — tool setup
 
-This installs the free command-line tools HomePod Restore uses.
+This installs the free command-line tools HomePod Hospital uses.
 It takes 5–15 minutes. You may be asked for your Mac password
 (nothing shows while you type it — that's normal).
 BANNER
@@ -174,9 +179,9 @@ brew doctor >/dev/null 2>&1 && ok "brew doctor: Your system is ready to brew!" |
 
 echo
 if [ "$FAIL" = "0" ]; then
-  echo "${green}${bold}All set! Go back to HomePod Restore and click “Check again”.${reset}"
+  echo "${green}${bold}All set! Go back to HomePod Hospital and click “Check again”.${reset}"
 else
-  echo "${yellow}${bold}Finished with warnings. Go back to HomePod Restore and click “Check again”.${reset}"
+  echo "${yellow}${bold}Finished with warnings. Go back to HomePod Hospital and click “Check again”.${reset}"
   echo "If something still shows a warning, ask in the Discord: https://discord.gg/nicsfix"
 fi
 echo

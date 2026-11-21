@@ -1,6 +1,8 @@
 // swift-tools-version:5.9
 //
-// HomePod Restore — a friendly Mac app for USB-restoring 1st-gen HomePods.
+// HomePod Hospital — a friendly Mac app for restoring, diagnosing and reviving
+// 1st-gen HomePods. (Formerly "HomePod Restore": the package, targets and
+// modules deliberately keep their HomePodRestore names.)
 //
 // Build the app bundle with:   ./scripts/build-app.sh
 // Run the core unit tests with: swift test

@@ -8,7 +8,7 @@ struct HomePodRestoreApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        WindowGroup("HomePod Restore") {
+        WindowGroup("HomePod Hospital") {
             RootView()
                 .environmentObject(model)
                 .frame(minWidth: 900, minHeight: 620)

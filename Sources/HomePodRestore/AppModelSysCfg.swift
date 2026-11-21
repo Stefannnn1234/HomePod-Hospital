@@ -178,7 +178,8 @@ extension AppModel {
         let irecovery = found.irecovery
 
         syscfg = SysCfgUIState(locationID: loc, ecid: ecid, kind: .read, phase: .bootingRamdisk,
-                               log: ["Booting Factory DIAGS from \(dir.path)..."],
+                               log: ["Ensure the HomePod is right-side up — it will reboot during this process.",
+                                     "Booting Factory DIAGS from \(dir.path)..."],
                                dump: nil, done: false, error: nil, running: true)
         syscfgTask?.cancel()
         syscfgTask = Task { [weak self] in
@@ -262,7 +263,8 @@ extension AppModel {
         }
 
         syscfg = SysCfgUIState(locationID: loc, ecid: ecid, kind: .read, phase: .unlocking,
-                               log: [], dump: nil, done: false, error: nil, running: true)
+                               log: ["Ensure the HomePod is right-side up — it will reboot during this process."],
+                               dump: nil, done: false, error: nil, running: true)
         syscfgTask?.cancel()
         syscfgTask = Task { [weak self] in
             let outcome = await controller.read(
@@ -384,7 +386,8 @@ extension AppModel {
         }
 
         syscfg = SysCfgUIState(locationID: loc, ecid: ecid, kind: .restore, phase: .unlocking,
-                               log: [], dump: parsed, done: false, error: nil, running: true)
+                               log: ["Ensure the HomePod is right-side up — it will reboot during this process."],
+                               dump: parsed, done: false, error: nil, running: true)
         syscfgTask?.cancel()
         syscfgTask = Task { [weak self] in
             let outcome = await controller.restore(
@@ -679,7 +682,8 @@ extension AppModel {
         }
         let controller = DiagnosticsController(booter: booter)
         diag = DiagUIState(locationID: loc, ecid: ecid, phase: .unlocking,
-                           log: [], bundle: nil, done: false, error: nil, running: true)
+                           log: ["Ensure the HomePod is right-side up — it will reboot during this process."],
+                           bundle: nil, done: false, error: nil, running: true)
         diagTask?.cancel()
         diagTask = Task { [weak self] in
             let outcome = await controller.pull(

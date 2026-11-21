@@ -70,7 +70,7 @@ public struct ToolStatus: Identifiable, Sendable {
 }
 
 public enum ToolLocator {
-    /// Tools shipped inside the app: HomePod Restore.app/Contents/Resources/bin
+    /// Tools shipped inside the app: HomePod Hospital.app/Contents/Resources/bin
     public static var bundledToolsDirectory: URL? {
         guard let res = Bundle.main.resourceURL else { return nil }
         let dir = res.appendingPathComponent("bin", isDirectory: true)
@@ -103,7 +103,8 @@ public enum ToolLocator {
     public static let expectedIdevicerestoreCommit = "d2e1c4f"
 
     /// Helper tools the in-app installer builds (patched gaster):
-    /// ~/Library/Application Support/HomePod Restore/bin
+    /// ~/Library/Application Support/HomePod Hospital/bin
+    /// (or …/HomePod Restore/bin on installs that predate the rename, see AppPaths)
     public static var userToolsDirectory: URL { AppPaths.support.appendingPathComponent("bin", isDirectory: true) }
 
     public static func locate(_ tool: Tool) -> (url: URL, bundled: Bool)? {

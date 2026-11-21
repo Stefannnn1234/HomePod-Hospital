@@ -201,7 +201,7 @@ public final class SSHRamdiskBuilder: @unchecked Sendable {
         """
         try body.write(to: runScript, atomically: true, encoding: .utf8)
 
-        let prompt = "HomePod Restore needs your password to build the SSH ramdisk. (It mounts and creates disk images.)"
+        let prompt = "HomePod Hospital needs your password to build the SSH ramdisk. (It mounts and creates disk images.)"
         let apple = "do shell script \"/bin/bash \" & quoted form of \"\(runScript.path)\" with administrator privileges with prompt \"\(prompt)\""
         let r = ProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/osascript"), arguments: ["-e", apple])
         runner = r

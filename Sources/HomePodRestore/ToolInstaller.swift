@@ -6,7 +6,7 @@ enum ToolInstaller {
     enum Failure: Error, LocalizedError {
         case missingResource(String)
         var errorDescription: String? {
-            if case .missingResource(let n) = self { return "The app is missing \(n). Please re-download HomePod Restore." }
+            if case .missingResource(let n) = self { return "The app is missing \(n). Please re-download HomePod Hospital." }
             return nil
         }
     }
@@ -28,7 +28,7 @@ enum ToolInstaller {
             try fm.copyItem(at: patch, to: p)
         }
         // A .command file opens in Terminal when double-clicked / opened.
-        let command = dir.appendingPathComponent(builder ? "Install HomePod Restore tools (with builder).command" : "Install HomePod Restore tools.command")
+        let command = dir.appendingPathComponent(builder ? "Install HomePod Hospital tools (with builder).command" : "Install HomePod Hospital tools.command")
         let body = """
         #!/bin/bash
         exec /bin/bash \(shellQuote(dest.path))\(builder ? " --builder" : "")

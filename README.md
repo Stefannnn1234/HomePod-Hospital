@@ -1,6 +1,8 @@
-# HomePod Restore
+# HomePod Hospital
 
-A friendly Mac app for USB-restoring 1st-gen HomePods (A1639, `AudioAccessory1,1`), built on the
+A friendly Mac app for restoring, diagnosing and reviving 1st-gen HomePods (A1639,
+`AudioAccessory1,1`) over USB. It was called **HomePod Restore** until November 2026; the Swift
+package, its targets and the bundle identifier still carry that name (see "Names" below). Built on the
 [homepod-restore guide](https://github.com/UnbendableStraw/homepod-restore) and the tools from
 tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
 
@@ -27,6 +29,13 @@ tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
   (Cover Glass Color) and `CLHS` (Housing Color) — and reads all three back. Confirmed on real
   hardware: after restoring firmware, the iOS setup prompt shows the new color. See
   [docs/diags-boot.md](docs/diags-boot.md#color-reconfiguration-space-gray--white).
+- **Nicotine (Linux)**: boots a HomePod from DFU into Nicotine, the Linux system that makes it a
+  standalone AirPlay and Bluetooth speaker — including boards that can no longer run audioOS. Runs
+  the proven `boot-linux.sh` sequence natively, waits for the pod's USB network, opens its web UI
+  and saves / restores its settings (automatically after a boot, if you like). The boot files come
+  from a Nicotine payload: built into the app (`BUNDLE_NICOTINE=1`), imported from a zip, or your
+  own image folder; a payload is checksum-verified before every boot. See
+  [docs/nicotine-boot.md](docs/nicotine-boot.md).
 - **Errors explained**: every message in the guide's Troubleshooting section is mapped to a
   title, explanation and "what to try", with hardware failures flagged as such. "Copy support info"
   produces a Discord-ready report (ECID redacted).
@@ -37,8 +46,10 @@ tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
 Needs macOS 13+ and Xcode or the Command Line Tools.
 
 ```bash
-./scripts/build-app.sh                  # → dist/HomePod Restore.app + zip
+./scripts/build-app.sh                  # → dist/HomePod Hospital.app + zip
 BUNDLE_TOOLS=1 ./scripts/build-app.sh   # also ships gaster/idevicerestore/irecovery inside the app
+BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh   # + the Nicotine payload: self-contained "Boot Nicotine"
+./scripts/make-nicotine-payload.sh      # → dist/Nicotine-<build>.zip (for "Import Nicotine payload…")
 swift test                              # core unit tests
 HOMEPOD_FAKE_TOOLS=1 swift test         # + end-to-end job tests with fake gaster/idevicerestore
 HOMEPOD_NET_TESTS=1 swift test          # + live partial-zip read of Apple's Apple TV IPSW
@@ -49,10 +60,16 @@ HOMEPOD_NET_TESTS=1 swift test          # + live partial-zip read of Apple's App
 on other CPUs the app falls back to installed tools. With bundled tools, end users don't need
 Homebrew at all to restore.
 
+`BUNDLE_NICOTINE=1` copies a Nicotine payload (about 44 MB) from `NICOTINE_PAYLOAD_DIR`, default
+`~/Downloads/diagsstuffnic/linux-homepod/public`, into `Contents/Resources/Nicotine` after checking
+every file against the payload's `MANIFEST`. The payload is never part of this repository. What a
+fresh Mac then still needs, and what has and has not been verified, is in
+[docs/nicotine-boot.md](docs/nicotine-boot.md#fresh-mac-checklist).
+
 Without bundled tools, Setup opens `scripts/setup-tools.sh` in Terminal. It follows the guide
 (d235j tap, HEAD libs, idevicerestore @ d2e1c4f with the irecv_init fix, removes the tap's
 idevicerestore) and builds gaster with `scripts/patches/gaster-ecid.patch` into
-`~/Library/Application Support/HomePod Restore/bin`.
+`~/Library/Application Support/HomePod Hospital/bin`.
 
 The app is ad-hoc signed by default; downloaded copies need right-click → Open the first time.
 Set `SIGN_ID` to a Developer ID and notarize for a smooth first launch.
@@ -71,10 +88,25 @@ donate links — no app update needed. If it's missing, the app uses the built-i
 
 ## Files
 
-- Logs: `~/Library/Logs/HomePod Restore/`
-- Firmware: `~/Library/Application Support/HomePod Restore/Firmware/`
-- Shared restore cache (unpacked rootfs, ~3.3 GB): `…/HomePod Restore/RestoreCache/`
+- Logs: `~/Library/Logs/HomePod Hospital/`
+- Firmware: `~/Library/Application Support/HomePod Hospital/Firmware/`
+- Shared restore cache (unpacked rootfs, ~3.3 GB): `…/HomePod Hospital/RestoreCache/`
+- A Mac that used the app while it was called HomePod Restore keeps its existing
+  `HomePod Restore` folders in both places; nothing is moved or re-downloaded.
 - Build work dir (no spaces, makeipsw.sh doesn't quote paths): `~/Library/Caches/HomePodRestore/build/`
+
+## Names
+
+The product is **HomePod Hospital** everywhere a user sees it: the app bundle, window and menu
+titles, the installer, the support report, the docs. Left as they were, on purpose:
+
+- SwiftPM package, targets, modules and source folders (`HomePodRestore`, `HomePodRestoreCore`) and
+  the executable inside the bundle — renaming them touches every import and the build script for no
+  visible gain.
+- Bundle identifier `com.nicsfix.homepodrestore` — macOS keys preferences (board-health records,
+  chosen firmware, the Nicotine folder) and privacy approvals to it.
+- The build work dir `~/Library/Caches/HomePodRestore/build/` (must not contain a space).
+- This checkout's folder name and the `homepod-restore` guide repository, which is a different thing.
 
 ## Layout
 
@@ -88,8 +120,10 @@ Sources/HomePodRestoreCore/   Foundation-only logic (builds & tests on Linux too
   IPSWBuilder.swift           makeipsw.sh pipeline, partial donor download
   ZipArchive.swift            ZIP/ZIP64 reader over files or HTTP ranges, verbatim entry copier
   Downloader.swift            resumable downloads
+  NicotineBooter.swift        Nicotine (Linux) boot = boot-linux.sh step for step, pod check, settings
+  NicotinePayload.swift       where the boot files come from: lookup order, MANIFEST check, import
 Sources/HomePodRestore/       SwiftUI app, IOKit USB monitor
-scripts/                      build-app.sh, bundle-tools.sh, setup-tools.sh, gaster patch
+scripts/                      build-app.sh, bundle-tools.sh, setup-tools.sh, make-nicotine-payload.sh, gaster patch
 Distribution/manifest.json    remote catalog to host on nicsfix.com
 ```
 

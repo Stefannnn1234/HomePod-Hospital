@@ -2,7 +2,7 @@ import SwiftUI
 import HomePodRestoreCore
 
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
-    case restore, firmware, health, diags, setup, help
+    case restore, firmware, health, diags, nicotine, setup, help
     var id: String { rawValue }
 
     var title: String {
@@ -11,6 +11,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .firmware: return "Firmware"
         case .health: return "Health Check"
         case .diags: return "DIAGS Shell"
+        case .nicotine: return "Nicotine (Linux)"
         case .setup: return "Setup"
         case .help: return "Help & Credits"
         }
@@ -22,6 +23,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         case .firmware: return "shippingbox"
         case .health: return "stethoscope"
         case .diags: return "terminal"
+        case .nicotine: return "homepod.fill"
         case .setup: return "wrench.and.screwdriver"
         case .help: return "questionmark.circle"
         }
@@ -54,12 +56,15 @@ struct RootView: View {
                 case .firmware: FirmwareView()
                 case .health: HealthView()
                 case .diags: DiagsShellView()
+                case .nicotine: NicotineView()
                 case .setup: SetupView()
                 case .help: HelpView()
                 }
             }
             .sheet(item: $model.syscfg) { SysCfgSheet(state: $0) }
             .sheet(item: $model.diag) { DiagnosticsSheet(state: $0) }
+            // "Boot Nicotine" on a device card shows its progress on the Nicotine page.
+            .onChange(of: model.nicotineRevealToken) { _ in section = .nicotine }
         }
     }
 

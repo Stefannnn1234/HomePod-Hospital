@@ -11,3 +11,20 @@ scripts/ssh-ramdisk-overlay/*
 
 # Generic A8 APTicket (vendored from SSHRD_Script for checkm8 boot)
 scripts/apticket-0x7000.shsh
+
+# Nicotine payload (boot files for "Boot Nicotine"): built outside this
+# repository and bundled into the app at build time (BUNDLE_NICOTINE=1) or
+# imported by the user. Never committed, wherever a copy lands.
+Nicotine/
+Nicotine-*/
+Nicotine-*.zip
+Resources/Nicotine/
+scripts/nicotine-payload/
+*.img4
+docs/knowledge-transfer.md
+screenlog.0
+build109screenlog.0
+screenlog.0
+*.0
+build.log
+screenlog.0

@@ -1,10 +1,22 @@
 #!/bin/bash
 #
-# Builds "HomePod Restore.app" (and a zip for distribution) into ./dist
+# Builds "HomePod Hospital.app" (and a zip for distribution) into ./dist
+# (The app was called "HomePod Restore" before; the Swift package, the binary
+# inside the bundle and the bundle identifier keep their old names on purpose.)
 #
 #   ./scripts/build-app.sh                 app only; users install tools via Setup
 #   BUNDLE_TOOLS=1 ./scripts/build-app.sh  also bundle gaster/idevicerestore/irecovery
 #                                          inside the app (no Homebrew needed to restore)
+#   BUNDLE_NICOTINE=1 ./scripts/build-app.sh
+#                                          also put a Nicotine payload inside the app
+#                                          (Contents/Resources/Nicotine), so "Boot Nicotine"
+#                                          works on a Mac that has never seen the project.
+#                                          Taken from NICOTINE_PAYLOAD_DIR, default
+#                                          ~/Downloads/diagsstuffnic/linux-homepod/public;
+#                                          every file its MANIFEST lists is checked and copied.
+#                                          The payload is never part of this repository.
+#   BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh
+#                                          the fully self-contained app (see docs/nicotine-boot.md)
 #   SIGN_ID="Developer ID Application: …"  sign with your certificate (default: ad-hoc)
 #   VERSION=1.0.0                          version string
 #
@@ -15,9 +27,9 @@ ROOT="$PWD"
 VERSION="${VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}"
 SIGN_ID="${SIGN_ID:--}"
-APP="$ROOT/dist/HomePod Restore.app"
+APP="$ROOT/dist/HomePod Hospital.app"
 
-echo "==> Building HomePodRestore $VERSION (release)"
+echo "==> Building HomePod Hospital $VERSION (release)"
 if [ "${UNIVERSAL:-0}" = "1" ]; then
   swift build -c release --arch arm64 --arch x86_64
   BIN_PATH="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
@@ -32,6 +44,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH/HomePodRestore" "$APP/Contents/MacOS/HomePodRestore"
 cp "$ROOT/scripts/setup-tools.sh" "$APP/Contents/Resources/setup-tools.sh"
 cp "$ROOT/scripts/build-ssh-ramdisk.sh" "$APP/Contents/Resources/build-ssh-ramdisk.sh"
+cp "$ROOT/scripts/prep-release-iboot.sh" "$APP/Contents/Resources/prep-release-iboot.sh"
 # Generic A8 (CPID 0x7000) APTicket for checkm8 boot of the SSH ramdisk.
 [ -f "$ROOT/scripts/apticket-0x7000.shsh" ] && cp "$ROOT/scripts/apticket-0x7000.shsh" "$APP/Contents/Resources/apticket-0x7000.shsh"
 # Ship the SSH-ramdisk overlay (dropbear + host keys + launch item) if assembled.
@@ -51,13 +64,16 @@ if [ -f "$ROOT/Resources/AppIcon.png" ]; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# CFBundleIdentifier stays com.nicsfix.homepodrestore: macOS keys saved
+# preferences (board-health records, chosen firmware, the Nicotine folder) and
+# privacy approvals to it, so changing it would silently reset them.
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>HomePod Restore</string>
-  <key>CFBundleDisplayName</key><string>HomePod Restore</string>
+  <key>CFBundleName</key><string>HomePod Hospital</string>
+  <key>CFBundleDisplayName</key><string>HomePod Hospital</string>
   <key>CFBundleIdentifier</key><string>com.nicsfix.homepodrestore</string>
   <key>CFBundleExecutable</key><string>HomePodRestore</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -76,6 +92,45 @@ if [ "${BUNDLE_TOOLS:-0}" = "1" ]; then
   "$ROOT/scripts/bundle-tools.sh" "$APP"
 fi
 
+# ---- Nicotine payload (optional): the boot files for "Boot Nicotine", inside the app
+if [ "${BUNDLE_NICOTINE:-0}" = "1" ]; then
+  PAYLOAD="${NICOTINE_PAYLOAD_DIR:-$HOME/Downloads/diagsstuffnic/linux-homepod/public}"
+  DEST="$APP/Contents/Resources/Nicotine"
+  echo "==> Bundling the Nicotine payload from $PAYLOAD"
+  [ -d "$PAYLOAD" ] || { echo "BUNDLE_NICOTINE=1, but there is no payload folder at $PAYLOAD (set NICOTINE_PAYLOAD_DIR)."; exit 1; }
+  [ -f "$PAYLOAD/MANIFEST" ] || { echo "BUNDLE_NICOTINE=1, but $PAYLOAD has no MANIFEST. Only a payload with a MANIFEST can be bundled."; exit 1; }
+  [ "$(head -n 1 "$PAYLOAD/MANIFEST" | tr -d '\r')" = "nicotine-payload 1" ] || { echo "$PAYLOAD/MANIFEST is not a Nicotine payload manifest."; exit 1; }
+  mkdir -p "$DEST"
+  COPIED=0
+  # every "<sha256>  <relative path>" line: check the file, then copy it
+  while IFS= read -r line; do
+    sum="${line%% *}"; rel="${line#* }"; rel="${rel#"${rel%%[! ]*}"}"; rel="${rel#\*}"; rel="${rel#./}"
+    case "$sum" in *[!0-9a-fA-F]*|"") continue ;; esac
+    [ ${#sum} -eq 64 ] || continue
+    case "$rel" in /*|*..*|"") echo "MANIFEST names a file outside the payload: $rel"; exit 1 ;; esac
+    [ -f "$PAYLOAD/$rel" ] || { echo "The payload is incomplete: $rel is missing from $PAYLOAD."; exit 1; }
+    actual="$(shasum -a 256 "$PAYLOAD/$rel" | awk '{print $1}')"
+    [ "$actual" = "$(printf '%s' "$sum" | tr 'A-F' 'a-f')" ] || { echo "Checksum mismatch for $rel: the payload in $PAYLOAD is damaged or half-copied."; exit 1; }
+    mkdir -p "$DEST/$(dirname "$rel")"
+    cp "$PAYLOAD/$rel" "$DEST/$rel"
+    COPIED=$((COPIED + 1))
+  done < "$PAYLOAD/MANIFEST"
+  for needed in img4/iBSS.dev-hoolock.img4 img4/iBEC.dev-hoolock.img4 img4/RestoreDeviceTree_b238aap.img4 img4/RestoreTrustCache.img4 img4/RestoreKernelCache_m1n1-linux.img4; do
+    [ -f "$DEST/$needed" ] || { echo "The payload's MANIFEST does not list $needed; this is not a bootable payload."; exit 1; }
+  done
+  cp "$PAYLOAD/MANIFEST" "$DEST/MANIFEST"
+  # scripts are run with /bin/bash by the app, but keep them runnable; nothing here is Mach-O
+  find "$DEST" -name "*.sh" -exec chmod 755 {} \;
+  echo "    $COPIED files, $(grep '^build=' "$PAYLOAD/MANIFEST" | head -n 1 | tr -d '\r') ($(du -sh "$DEST" | awk '{print $1}'))"
+  if [ "${BUNDLE_TOOLS:-0}" = "1" ]; then
+    for t in gaster irecovery; do
+      [ -x "$APP/Contents/Resources/bin/$t" ] || { echo "The Nicotine boot needs $t, and it did not get bundled (is it installed on this Mac?)."; exit 1; }
+    done
+  else
+    echo "    Note: built without BUNDLE_TOOLS=1. A fresh Mac will still have to install gaster and irecovery (Nicotine page → Install tools…)."
+  fi
+fi
+
 echo "==> Signing ($SIGN_ID)"
 if [ -d "$APP/Contents/Frameworks" ]; then
   find "$APP/Contents/Frameworks" -name "*.dylib" -exec codesign --force --timestamp=none -s "$SIGN_ID" {} \;
@@ -91,10 +146,13 @@ fi
 
 echo "==> Packaging"
 cd "$ROOT/dist"
-rm -f "HomePod-Restore-$VERSION.zip"
-ditto -c -k --keepParent "HomePod Restore.app" "HomePod-Restore-$VERSION.zip"
+rm -f "HomePod-Hospital-$VERSION.zip"
+ditto -c -k --keepParent "HomePod Hospital.app" "HomePod-Hospital-$VERSION.zip"
 echo
-echo "Built: $APP"
-echo "Zip:   $ROOT/dist/HomePod-Restore-$VERSION.zip"
+echo "Built: $APP ($(du -sh "$APP" | awk '{print $1}'))"
+[ -d "$APP/Contents/Resources/Nicotine" ] && echo "       with a Nicotine payload inside ($(grep '^build=' "$APP/Contents/Resources/Nicotine/MANIFEST" | head -n 1 | tr -d '\r'))"
+[ -d "$APP/Contents/Resources/bin" ] && echo "       with tools inside for: $(cat "$APP/Contents/Resources/bin/ARCHS" 2>/dev/null || echo unknown) (other CPUs fall back to the installer)"
+echo "Zip:   $ROOT/dist/HomePod-Hospital-$VERSION.zip"
+[ -d "$ROOT/dist/HomePod Restore.app" ] && echo "Note: dist/ still holds the old \"HomePod Restore.app\" from before the rename. It is not updated any more; delete it when you like."
 [ "$SIGN_ID" = "-" ] && echo "Note: ad-hoc signed. Other Macs will need right-click → Open the first time (or notarize with a Developer ID)."
 exit 0

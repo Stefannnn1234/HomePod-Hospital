@@ -88,60 +88,224 @@ struct IdleDeviceCard: View {
             Label("This doesn't look like a 1st-gen HomePod (chip \(ib.cpid.map { String(format: "0x%X", $0) } ?? "?")). This app only restores the original HomePod.",
                   systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange).font(.callout)
+        } else if let record = model.healthRecord(for: device),
+                  record.assessment == .partiallyFunctional || record.assessment == .partsOnly {
+            // Board has known hardware issues — show tailored UI
+            healthAwareDFUContent(record: record)
         } else {
-            if device.speed == 0 || device.speed == 1 {
-                Label("Connected at USB full speed. That usually means the adapter isn't sitting flat — the restore may fail. Try re-seating it.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange).font(.callout)
-            }
-            let blocker = model.blocker(for: device, kind: .restore)
-            Text(blocker ?? "Ready to restore. This erases the HomePod and installs \(model.selectedFirmware?.info.productVersion ?? "the selected") software.")
-                .font(.callout)
-                .foregroundStyle(blocker == nil ? Color.primary : Color.orange)
-            HStack {
-                Button {
-                    model.startJob(.restore, on: device)
-                } label: {
-                    Label("Restore", systemImage: "arrow.counterclockwise")
-                        .frame(minWidth: 90)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(blocker != nil)
+            normalDFUContent
+        }
+    }
 
-                Menu("Check health") {
-                    Button("Quick check (30 seconds)") { model.startJob(.quickCheck, on: device) }
-                        .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
-                    Button("Boot test — doesn't erase (2–3 minutes)") { model.startJob(.bootTest, on: device) }
-                        .disabled(model.blocker(for: device, kind: .bootTest) != nil)
+    /// Normal DFU content for healthy / unknown boards.
+    @ViewBuilder private var normalDFUContent: some View {
+        if device.speed == 0 || device.speed == 1 {
+            Label("Connected at USB full speed. That usually means the adapter isn't sitting flat — the restore may fail. Try re-seating it.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange).font(.callout)
+        }
+        Label("Make sure the HomePod is right-side up before starting — it reboots during restore.",
+              systemImage: "arrow.up.circle.fill")
+            .foregroundStyle(.orange).font(.callout)
+        let blocker = model.blocker(for: device, kind: .restore)
+        Text(blocker ?? "Ready to restore. This erases the HomePod and installs \(model.selectedFirmware?.info.productVersion ?? "the selected") software.")
+            .font(.callout)
+            .foregroundStyle(blocker == nil ? Color.primary : Color.orange)
+        HStack {
+            Button {
+                model.startJob(.restore, on: device)
+            } label: {
+                Label("Restore", systemImage: "arrow.counterclockwise")
+                    .frame(minWidth: 90)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(blocker != nil)
+
+            Menu("Check health") {
+                Button("Quick check (30 seconds)") { model.startJob(.quickCheck, on: device) }
+                    .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
+                Button("Boot test — doesn't erase (2–3 minutes)") { model.startJob(.bootTest, on: device) }
+                    .disabled(model.blocker(for: device, kind: .bootTest) != nil)
+                Divider()
+                Button("Pull diagnostics (panic log)…") { model.pullDiagnostics(on: device) }
+                    .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
+                if model.showAdvanced {
                     Divider()
-                    Button("Pull diagnostics (panic log)…") { model.pullDiagnostics(on: device) }
-                        .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
-                    if model.showAdvanced {
-                        Divider()
-                        Picker("Boot mode", selection: $model.syscfgBootMode) {
-                            ForEach(SysCfgBootMode.allCases.filter(\.isVisible)) { Text($0.title).tag($0) }
-                        }
-                        Text(model.syscfgBootMode.blurb)
+                    Picker("Boot mode", selection: $model.syscfgBootMode) {
+                        ForEach(SysCfgBootMode.allCases.filter(\.isVisible)) { Text($0.title).tag($0) }
+                    }
+                    Text(model.syscfgBootMode.blurb)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if model.syscfgBootMode.usesSSH {
+                        Button("Read SysCfg (SSH)") { model.readSysCfg(on: device) }
+                            .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
+                        Button("Restore SysCfg from dump…") { pickAndRestoreSysCfg(device) }
+                            .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
+                    } else {
+                        Button("Boot Factory DIAGS") { model.bootFactoryDiags(on: device) }
+                            .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
+                        Text("After DIAGS boots, open DIAGS Shell in the sidebar\nand connect your USB-to-serial adapter.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        if model.syscfgBootMode.usesSSH {
-                            Button("Read SysCfg (SSH)") { model.readSysCfg(on: device) }
-                                .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
-                            Button("Restore SysCfg from dump…") { pickAndRestoreSysCfg(device) }
-                                .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
-                        } else {
-                            Button("Boot Factory DIAGS") { model.bootFactoryDiags(on: device) }
-                                .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
-                            Text("After DIAGS boots, open DIAGS Shell in the sidebar\nand connect your USB-to-serial adapter.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                    }
+                    Divider()
+                    Button("Boot Nicotine (Linux)") { model.bootNicotine(reveal: true) }
+                        .disabled(model.nicotine.isBusy)
+                }
+            }
+            .fixedSize()
+            .controlSize(.large)
+        }
+    }
+
+    /// DFU content for boards with known hardware faults — shows available boot
+    /// options and explains what's going on in plain language.
+    @ViewBuilder private func healthAwareDFUContent(record: BoardHealthRecord) -> some View {
+        // Plain-language summary of what's wrong
+        VStack(alignment: .leading, spacing: 6) {
+            if record.sep == .dead && (record.nand == .failed || record.nand == .degraded) {
+                Label("This HomePod's security chip and storage both have problems", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                Text("It can't run normal HomePod software, but it can still boot into diagnostics or run Linux from memory.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else if record.sep == .dead {
+                Label("This HomePod's security chip isn't working", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                Text("Normal HomePod software can't be installed because the security chip (SEP) rejects its firmware. But DFU, diagnostics, SSH, and Linux still work.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else if record.nand == .failed {
+                Label("This HomePod's storage chip has failed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                Text("The flash storage isn't responding. Anything that needs to save data won't work, but you can still boot into diagnostics or run Linux from memory.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else if record.nand == .degraded {
+                Label("This HomePod's storage has errors", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                Text("The flash storage is showing errors but may still be partially usable. A restore with reformatting might work.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+
+        Divider()
+
+        // Boot options based on health
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Available options").font(.callout.weight(.semibold))
+            let options = record.bootOptions
+            ForEach(options) { opt in
+                BootOptionRow(option: opt, device: device)
+            }
+        }
+
+        Divider()
+
+        // Always offer re-check and advanced menu
+        HStack {
+            Menu("Re-check health") {
+                Button("Quick check (30 seconds)") { model.startJob(.quickCheck, on: device) }
+                    .disabled(model.blocker(for: device, kind: .quickCheck) != nil)
+                Button("Boot test (2-3 minutes)") { model.startJob(.bootTest, on: device) }
+                    .disabled(model.blocker(for: device, kind: .bootTest) != nil)
+                Divider()
+                Button("Clear diagnosis and start fresh") {
+                    if let ecid = device.iboot?.ecid {
+                        model.clearBoardHealth(ecid: ecid)
                     }
                 }
-                .fixedSize()
-                .controlSize(.large)
             }
+            .controlSize(.small)
+
+            Spacer()
+
+            HStack(spacing: 4) {
+                Image(systemName: "wrench.adjustable.fill").font(.caption)
+                Link("Nic's Fix can repair this", destination: Links.website)
+            }
+            .font(.caption)
+        }
+    }
+}
+
+/// A single boot option row with an action button.
+struct BootOptionRow: View {
+    let option: BootOption
+    let device: ConnectedDevice
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: option.icon)
+                .foregroundStyle(option.available ? Color.accentColor : Color.secondary)
+                .frame(width: 20)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.title)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(option.available ? .primary : .secondary)
+                Text(option.available ? option.description : (option.unavailableReason ?? option.description))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if option.available {
+                Button(actionLabel) { performAction() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!canPerform)
+            } else {
+                Image(systemName: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .help(option.unavailableReason ?? "Not available")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var actionLabel: String {
+        switch option.id {
+        case "restore", "restore-reformat": return "Restore"
+        case "sshrd":   return "Boot"
+        case "diags":   return "Boot"
+        case "linux":   return "Boot"
+        default:        return "Start"
+        }
+    }
+
+    private var canPerform: Bool {
+        switch option.id {
+        case "restore", "restore-reformat":
+            return model.blocker(for: device, kind: .restore) == nil
+        case "sshrd":
+            return model.blocker(for: device, kind: .quickCheck) == nil
+        case "diags":
+            return model.blocker(for: device, kind: .quickCheck) == nil
+        case "linux":
+            // Anything in the way is explained on the Nicotine page.
+            return !model.nicotine.isBusy
+        default:
+            return true
+        }
+    }
+
+    private func performAction() {
+        switch option.id {
+        case "restore":
+            model.startJob(.restore, on: device)
+        case "restore-reformat":
+            model.startJob(.restore, on: device)
+        case "sshrd":
+            model.readSysCfg(on: device)
+        case "diags":
+            model.bootFactoryDiags(on: device)
+        case "linux":
+            // Nicotine: boot-linux.sh run natively (AppModelNicotine.swift). The
+            // progress and the running pod are shown on the Nicotine page.
+            model.bootNicotine(reveal: true)
+        default:
+            break
         }
     }
 }
@@ -289,6 +453,26 @@ struct JobCard: View {
             }
         }
         if issue?.isHardware == true {
+            // Show what the user CAN do with this board based on detected faults
+            let ecid = state.job.ecid
+            if let record = model.boardHealth[ecid],
+               record.assessment != .unknown && record.assessment != .fullyFunctional {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("What you can still do with this HomePod:").font(.callout.weight(.semibold))
+                    ForEach(record.bootOptions.filter(\.available)) { opt in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: opt.icon).foregroundStyle(.green).frame(width: 16)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(opt.title).font(.callout.weight(.medium))
+                                Text(opt.description).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("Dismiss this card and reconnect in DFU to see these options.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             HStack {
                 Image(systemName: "wrench.adjustable.fill")
                 Text("Looks like a hardware problem.")

@@ -5,7 +5,7 @@ import Foundation
 public enum SupportReport {
     public static func make(appVersion: String, macOS: String, tools: [ToolStatus], device: ConnectedDevice?,
                             snapshot: RestoreJob.Snapshot?, firmware: FirmwareItem?, logTail: Int = 60) -> String {
-        var s = "**HomePod Restore support report**\n```\n"
+        var s = "**HomePod Hospital support report**\n```\n"
         s += "App: \(appVersion)   macOS: \(macOS)\n"
         if let fw = firmware { s += "Firmware: \(fw.displayName) [\(fw.origin.rawValue)]\n" }
         for t in tools {

@@ -1,4 +1,4 @@
-// Diagnostic: shows what HomePod Restore's USB monitor sees.
+// Diagnostic: shows what HomePod Hospital's USB monitor sees.
 //   swift scripts/usb-scan.swift
 import Foundation
 import IOKit

@@ -32,7 +32,13 @@ IDR_VERSION="$("$IDR" -v 2>&1 || true)"
 grep -q d2e1c4f <<<"$IDR_VERSION" || echo "WARNING: $IDR is not the d2e1c4f build the guide uses ($IDR_VERSION)"
 cp "$IDR" "$BIN/idevicerestore"
 IREC="$(command -v irecovery || true)"
-[ -n "$IREC" ] && cp "$IREC" "$BIN/irecovery"
+if [ -n "$IREC" ]; then
+  cp "$IREC" "$BIN/irecovery"
+else
+  # Restores work without it, but the Nicotine, SSH-ramdisk and DIAGS boots do not.
+  echo "WARNING: irecovery not found on this Mac (brew install --HEAD libirecovery). It is NOT in the bundle:"
+  echo "         Boot Nicotine / SSH ramdisk / Factory DIAGS will ask the user to install tools."
+fi
 
 echo "==> Copying SysCfg / builder tools (img4tool, ra1nsn0w, tsschecker, iproxy, sshpass)"
 for t in img4tool ra1nsn0w tsschecker iproxy sshpass; do
@@ -55,8 +61,9 @@ dylibbundler -of -b -cd "${ARGS[@]}" -d "$FW" -p @executable_path/../../Framewor
 # Record the CPU architecture(s) so the app ignores these on other CPUs.
 lipo -archs "$BIN/idevicerestore" > "$BIN/ARCHS"
 echo "Bundled tools for: $(cat "$BIN/ARCHS")"
-for t in "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
+for t in "$BIN"/gaster "$BIN"/irecovery "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
   [ -f "$t" ] || continue
   LEAKS="$(otool -L "$t" | tail -n +2 | grep -vE "/usr/lib/|/System/|@executable_path" || true)"
-  [ -n "$LEAKS" ] && { echo "WARNING: $(basename "$t") still links outside the bundle:"; echo "$LEAKS"; }
+  if [ -n "$LEAKS" ]; then echo "WARNING: $(basename "$t") still links outside the bundle:"; echo "$LEAKS"; fi
 done
+exit 0

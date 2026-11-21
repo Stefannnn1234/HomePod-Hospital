@@ -115,7 +115,7 @@ public final class RestoreJob: @unchecked Sendable, Identifiable {
     // MARK: - Run
 
     public func run() async {
-        writeLog("HomePod Restore — \(kind.title) for ECID \(ecidHex) at \(Date())\n")
+        writeLog("HomePod Hospital — \(kind.title) for ECID \(ecidHex) at \(Date())\n")
         if let fw = firmware { writeLog("Firmware: \(fw.displayName) — \(fw.path)\n") }
         do {
             // 1. Unlock (pwn) — serialized across all HomePods.

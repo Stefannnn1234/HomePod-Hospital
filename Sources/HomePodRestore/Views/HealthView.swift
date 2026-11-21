@@ -61,6 +61,12 @@ struct HealthDeviceCard: View {
                 if let job = slot?.job, job.isRunning {
                     Text("This HomePod is restoring — see the Restore screen.").foregroundStyle(.secondary)
                 } else {
+                    // Show board health summary if we have a diagnosis for this board
+                    if let record = model.healthRecord(for: device),
+                       record.assessment != .unknown && record.assessment != .fullyFunctional {
+                        BoardHealthSummary(record: record)
+                    }
+
                     HealthChecklist(device: device, snapshot: slot?.job?.snapshot)
                     HStack {
                         Button("Quick check") { model.startJob(.quickCheck, on: device) }
@@ -160,6 +166,174 @@ struct HealthChecklist: View {
         case .warn: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .fail: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
         case .unknown: Image(systemName: "circle.dotted").foregroundStyle(.secondary)
+        }
+    }
+}
+
+
+// MARK: - Board Health Summary
+
+/// Shows a plain-language hardware health summary for a board with known issues.
+struct BoardHealthSummary: View {
+    let record: BoardHealthRecord
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Lead with what the user CAN do
+            whatYouCanDo
+
+            Divider()
+
+            // Component status rows
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Hardware status").font(.callout.weight(.semibold))
+                statusRow(
+                    icon: sepIcon, color: sepColor,
+                    title: "Security chip (SEP)",
+                    detail: record.sep.explanation
+                )
+                statusRow(
+                    icon: nandIcon, color: nandColor,
+                    title: "Storage (NAND)",
+                    detail: record.nand.explanation
+                )
+                statusRow(
+                    icon: assessmentIcon, color: assessmentColor,
+                    title: "Overall",
+                    detail: record.assessment.label
+                )
+            }
+
+            // Detection notes (collapsible)
+            if !record.detectionNotes.isEmpty {
+                DisclosureGroup("Detection details") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(record.detectionNotes, id: \.self) { note in
+                            Text("- " + note)
+                        }
+                        Text("Last checked: \(record.lastChecked.formatted(date: .abbreviated, time: .shortened))")
+                    }
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                }
+                .font(.caption)
+            }
+
+            // Clear button
+            HStack {
+                Spacer()
+                Button("Clear diagnosis") {
+                    model.clearBoardHealth(ecid: record.ecid)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("Remove the stored hardware status for this board (e.g. after a repair)")
+            }
+        }
+    }
+
+    @ViewBuilder private var whatYouCanDo: some View {
+        let options = record.bootOptions.filter(\.available)
+        if options.isEmpty {
+            Label("This board doesn't have any usable options.", systemImage: "xmark.octagon.fill")
+                .font(.callout.weight(.semibold)).foregroundStyle(.red)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                switch record.assessment {
+                case .fullyFunctional:
+                    Label("This HomePod is fully functional", systemImage: "checkmark.circle.fill")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.green)
+                case .partiallyFunctional:
+                    Label("This HomePod has hardware issues, but can still be used", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                case .partsOnly:
+                    Label("This HomePod has major hardware issues", systemImage: "xmark.octagon.fill")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.red)
+                case .unknown:
+                    Label("Hardware status unknown", systemImage: "questionmark.circle")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+                }
+
+                if record.assessment != .fullyFunctional && record.assessment != .unknown {
+                    Text("Here's what you can do with it:")
+                        .font(.callout).foregroundStyle(.secondary)
+                    ForEach(options) { opt in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: opt.icon).foregroundStyle(.green)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(opt.title).font(.callout.weight(.medium))
+                                Text(opt.description).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func statusRow(icon: String, color: Color, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon).foregroundStyle(color).frame(width: 16)
+            Text(title).fontWeight(.medium).frame(width: 150, alignment: .leading)
+            Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.callout)
+    }
+
+    // MARK: Icons & colors
+
+    private var sepIcon: String {
+        switch record.sep {
+        case .unknown: return "circle.dotted"
+        case .working: return "checkmark.circle.fill"
+        case .dead:    return "xmark.circle.fill"
+        }
+    }
+
+    private var sepColor: Color {
+        switch record.sep {
+        case .unknown: return .secondary
+        case .working: return .green
+        case .dead:    return .red
+        }
+    }
+
+    private var nandIcon: String {
+        switch record.nand {
+        case .unknown:  return "circle.dotted"
+        case .healthy:  return "checkmark.circle.fill"
+        case .degraded: return "exclamationmark.triangle.fill"
+        case .failed:   return "xmark.circle.fill"
+        }
+    }
+
+    private var nandColor: Color {
+        switch record.nand {
+        case .unknown:  return .secondary
+        case .healthy:  return .green
+        case .degraded: return .orange
+        case .failed:   return .red
+        }
+    }
+
+    private var assessmentIcon: String {
+        switch record.assessment {
+        case .unknown:             return "circle.dotted"
+        case .fullyFunctional:     return "checkmark.circle.fill"
+        case .partiallyFunctional: return "exclamationmark.triangle.fill"
+        case .partsOnly:           return "xmark.octagon.fill"
+        }
+    }
+
+    private var assessmentColor: Color {
+        switch record.assessment {
+        case .unknown:             return .secondary
+        case .fullyFunctional:     return .green
+        case .partiallyFunctional: return .orange
+        case .partsOnly:           return .red
         }
     }
 }

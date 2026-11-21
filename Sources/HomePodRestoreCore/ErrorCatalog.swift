@@ -90,13 +90,15 @@ public enum ErrorCatalog {
         // ---- Hardware ---------------------------------------------------------
         KnownIssue(id: "hw.nand",
                    title: "Possible storage (NAND) failure",
-                   explanation: "The HomePod's storage chip didn't respond. This usually means the NAND has failed, which is a hardware repair.",
+                   explanation: "The HomePod's storage chip didn't respond. This usually means the NAND has failed or is badly degraded.",
                    suggestions: [
                     "Try once more after restarting your Mac to rule out a fluke.",
+                    "Open the Health Check tab to see what this HomePod can still do — diagnostics, SSH, and Linux may still work.",
                     "If it happens again, the HomePod needs a board-level repair — Nic's Fix can help.",
                    ],
                    severity: .fatal, category: .hardwareNAND,
-                   patterns: ["Waiting on NAND", "Timeout waiting for NVRAM Service", "Status: Disk Failure", "Status: Failed to mount filesystems"]),
+                   patterns: ["Waiting on NAND", "Timeout waiting for NVRAM Service", "Status: Disk Failure", "Status: Failed to mount filesystems",
+                              "NAND_UNC", "kIOReturnUnformattedMedia", "GEB detected failure"]),
         KnownIssue(id: "hw.soc",
                    title: "The HomePod didn't start the restore software",
                    explanation: "The HomePod accepted the first stage but never came back. This can be a bad USB connection, but if it keeps happening it points to an A8 processor (SoC) failure.",
@@ -109,10 +111,14 @@ public enum ErrorCatalog {
                    patterns: ["Possibly invalid iBEC", "Possibly invalid iBSS", "Device failed to enter restore mode", "did not reconnect in recovery mode"]),
         KnownIssue(id: "hw.sep",
                    title: "Secure Enclave firmware failed to load",
-                   explanation: "The HomePod's security chip rejected its firmware. Try again; if it repeats it's likely a hardware fault.",
-                   suggestions: [reseat, "Try the restore one more time."],
+                   explanation: "The HomePod's security chip (SEP) rejected its firmware. If this happens every time, the SEP is dead — normal HomePod software can't be installed, but diagnostics, SSH, and Linux still work.",
+                   suggestions: [
+                    "Try the restore one more time to rule out a fluke.",
+                    "If it keeps failing: open the Health Check tab to see what this HomePod can still do.",
+                    "Boot Factory DIAGS or an SSH ramdisk for diagnostics.",
+                   ],
                    severity: .fatal, category: .hardwareOther,
-                   patterns: ["Failed to load SEP Firmware"]),
+                   patterns: ["Failed to load SEP Firmware", "load_sep_os", "SEP ROM boot panic"]),
 
         // ---- Connection --------------------------------------------------------
         KnownIssue(id: "conn.pwn",

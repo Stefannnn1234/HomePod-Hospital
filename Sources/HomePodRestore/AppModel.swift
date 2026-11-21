@@ -121,6 +121,9 @@ final class AppModel: ObservableObject {
     @Published var diagsModelFailed = false
     var diagsIdleTask: Task<Void, Never>?
 
+    // Board health (per-ECID hardware fault tracking)
+    @Published private(set) var boardHealth: [UInt64: BoardHealthRecord] = BoardHealthStore.load()
+
     // Settings
     @Published var autoRestore: Bool {
         didSet { UserDefaults.standard.set(autoRestore, forKey: "autoRestore") }
@@ -128,6 +131,30 @@ final class AppModel: ObservableObject {
     @Published var showAdvanced: Bool {
         didSet { UserDefaults.standard.set(showAdvanced, forKey: "showAdvanced") }
     }
+
+    // Nicotine (Linux) boot — see AppModelNicotine.swift
+    @Published var nicotine = NicotineUIState()
+    /// A Nicotine image folder the user picked: the one boot-linux.sh lives in
+    /// (its img4/ holds the boot files). Empty = none picked; the payload built
+    /// into the app or an imported one is used then (see `nicotinePayload`).
+    @Published var nicotineFolderPath: String {
+        didSet { UserDefaults.standard.set(nicotineFolderPath, forKey: "nicotineFolder") }
+    }
+    /// Put a pod's saved settings back by themselves once it answers after a boot.
+    @Published var nicotineAutoRestore: Bool {
+        didSet { UserDefaults.standard.set(nicotineAutoRestore, forKey: "nicotineAutoRestore") }
+    }
+    /// Boot with Apple's release boot loaders (prepared from the audioOS 16.4
+    /// update) instead of the patched development pair. Only takes effect when
+    /// the two files are prepared; otherwise the boot uses the dev pair.
+    @Published var nicotineUseReleaseIBoot: Bool {
+        didSet { UserDefaults.standard.set(nicotineUseReleaseIBoot, forKey: "nicotineUseReleaseIBoot") }
+    }
+    /// Bumped to make RootView switch to the Nicotine page.
+    @Published var nicotineRevealToken = 0
+    var nicotineTask: Task<Void, Never>?
+    var nicotineSettingsTask: Task<Void, Never>?
+    var nicotinePrepareTask: Task<Void, Never>?
 
     let firmwareLibrary = FirmwareLibrary()
     private var monitor: USBMonitor?
@@ -148,6 +175,10 @@ final class AppModel: ObservableObject {
     init() {
         autoRestore = UserDefaults.standard.bool(forKey: "autoRestore")
         showAdvanced = UserDefaults.standard.bool(forKey: "showAdvanced")
+        nicotineFolderPath = UserDefaults.standard.string(forKey: "nicotineFolder")
+            ?? NicotineLayout.discover()?.root.path ?? ""
+        nicotineAutoRestore = UserDefaults.standard.object(forKey: "nicotineAutoRestore") as? Bool ?? true
+        nicotineUseReleaseIBoot = UserDefaults.standard.bool(forKey: "nicotineUseReleaseIBoot")
         if let raw = UserDefaults.standard.string(forKey: "syscfgBootMode"),
            let m = SysCfgBootMode(rawValue: raw) {
             syscfgBootMode = m
@@ -282,6 +313,10 @@ final class AppModel: ObservableObject {
 
     private func jobUpdated(location: UInt32, ecid: UInt64, snap: RestoreJob.Snapshot) {
         guard snap.outcome != .running else { return }
+
+        // Update board health record from the finished job.
+        updateBoardHealth(ecid: ecid, snapshot: snap)
+
         if snap.outcome == .succeeded {
             if snap.kind == .restore {
                 recentlyRestored[ecid] = Date()
@@ -290,6 +325,36 @@ final class AppModel: ObservableObject {
         } else if case .failed = snap.outcome {
             notify(title: "HomePod restore stopped", body: snap.primaryIssue?.title ?? snap.status)
         }
+    }
+
+    // MARK: - Board Health
+
+    /// Look up the stored health record for a device (by ECID).
+    func healthRecord(for device: ConnectedDevice) -> BoardHealthRecord? {
+        guard let ecid = device.iboot?.ecid else { return nil }
+        return boardHealth[ecid]
+    }
+
+    /// Update the health record for a board after a job finishes.
+    func updateBoardHealth(ecid: UInt64, snapshot: RestoreJob.Snapshot) {
+        var record = boardHealth[ecid] ?? BoardHealthRecord(ecid: ecid)
+        record.update(from: snapshot)
+        boardHealth[ecid] = record
+        BoardHealthStore.save(boardHealth)
+    }
+
+    /// Update from UART log data (called from DIAGS serial session).
+    func updateBoardHealthFromUART(ecid: UInt64, log: String) {
+        var record = boardHealth[ecid] ?? BoardHealthRecord(ecid: ecid)
+        record.updateFromUART(log)
+        boardHealth[ecid] = record
+        BoardHealthStore.save(boardHealth)
+    }
+
+    /// Clear a stored health record (e.g. after a board repair).
+    func clearBoardHealth(ecid: UInt64) {
+        boardHealth.removeValue(forKey: ecid)
+        BoardHealthStore.save(boardHealth)
     }
 
     func cancel(_ state: JobState) { state.job.cancel() }
