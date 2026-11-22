@@ -19,24 +19,24 @@ import FoundationNetworking
 //   → hBootPatcher -airs            (sig-check, IORVBAR, AES)
 //   → img4 -i … -M <IM4M> -A -T ibss/ibec   (wrap + sign with the A8 IM4M)
 //
-// The IM4M is taken from the app's generic A8 APTicket (apticket-0x7000.shsh,
-// already bundled), the same way SSHRD_Script/add_tool.sh gets it. See
+// The IM4M is the generic A8 ticket that ships in this repository's Nicotine
+// kit (nicotine/prebuilt/0x7000.im4m, copied into the app's Resources by
+// build-app.sh). Nothing outside the repository is needed. See
 // docs/nicotine-boot.md.
 
 /// Builds `iBSS.img4` / `iBEC.img4` in a folder, streaming progress.
 public final class ReleaseIBootBuilder: @unchecked Sendable {
     /// The bundled tools the build needs. The model resolves them (ToolLocator
-    /// for gaster/img4tool; bundled Resources for hBootPatcher/img4/the ticket).
+    /// for gaster; bundled Resources for hBootPatcher/img4/the IM4M).
     public struct Tools: Sendable {
         public var gaster: URL
         public var hBootPatcher: URL
         public var img4: URL
-        public var img4tool: URL
-        /// Generic A8 APTicket, for the IM4M (apticket-0x7000.shsh in Resources).
-        public var apticket: URL
-        public init(gaster: URL, hBootPatcher: URL, img4: URL, img4tool: URL, apticket: URL) {
+        /// Generic A8 IM4M (nicotine-0x7000.im4m in Resources), used to sign the wrap.
+        public var im4m: URL
+        public init(gaster: URL, hBootPatcher: URL, img4: URL, im4m: URL) {
             self.gaster = gaster; self.hBootPatcher = hBootPatcher; self.img4 = img4
-            self.img4tool = img4tool; self.apticket = apticket
+            self.im4m = im4m
         }
     }
 
@@ -144,10 +144,10 @@ public final class ReleaseIBootBuilder: @unchecked Sendable {
         try checkCancelled()
         stage(.checking, nil)
         for (name, url) in [("gaster", tools.gaster), ("hBootPatcher", tools.hBootPatcher),
-                            ("img4", tools.img4), ("img4tool", tools.img4tool)] {
+                            ("img4", tools.img4)] {
             guard fm.isExecutableFile(atPath: url.path) else { throw Failure.toolMissing(name) }
         }
-        guard fm.fileExists(atPath: tools.apticket.path) else { throw Failure.toolMissing("apticket-0x7000.shsh") }
+        guard fm.fileExists(atPath: tools.im4m.path) else { throw Failure.toolMissing("nicotine-0x7000.im4m") }
 
         let work = outputDir.appendingPathComponent(".work", isDirectory: true)
         try? fm.removeItem(at: work)
@@ -162,10 +162,8 @@ public final class ReleaseIBootBuilder: @unchecked Sendable {
                                                              progress: { p in stage(.downloading, p) })
         try checkCancelled()
 
-        // The IM4M for the wrap, from the bundled APTicket (one-off).
-        let im4m = work.appendingPathComponent("IM4M")
-        try await runTool(tools.img4tool, ["-e", "-s", tools.apticket.path, "-m", im4m.path],
-                          what: "Reading the signature (img4tool)", onLog: onLog)
+        // The IM4M for the wrap: the generic A8 ticket bundled with the app.
+        let im4m = tools.im4m
 
         // 2–4. Decrypt (gaster), patch (hBootPatcher), wrap (img4) — one checkm8.
         try await UnlockCoordinator.shared.run {

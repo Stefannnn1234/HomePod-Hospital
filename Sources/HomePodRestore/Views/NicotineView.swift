@@ -121,7 +121,7 @@ struct NicotineView: View {
     }
 
     private func payloadReadyText(_ payload: NicotinePayload) -> String {
-        var text = "All five boot files are there"
+        var text = "All three boot files are there"
         if let image = payload.layout.imageDescription { text += " (Nicotine image: \(image))" }
         text += payload.manifest == nil ? ". This folder has no MANIFEST, so the files aren't checked."
                                         : ". They are checked against the MANIFEST before every boot."

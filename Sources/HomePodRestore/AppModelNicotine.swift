@@ -149,11 +149,31 @@ extension AppModel {
             return nil
         }
         guard let gaster = nicotineTool(.gaster),
-              let img4tool = ToolLocator.locate(.img4tool)?.url,
               let hb = helper("hBootPatcher"), let img4 = helper("img4"),
-              let shsh = Bundle.main.resourceURL?.appendingPathComponent("apticket-0x7000.shsh"),
-              fm.fileExists(atPath: shsh.path) else { return nil }
-        return .init(gaster: gaster, hBootPatcher: hb, img4: img4, img4tool: img4tool, apticket: shsh)
+              let im4m = Bundle.main.resourceURL?.appendingPathComponent("nicotine-0x7000.im4m"),
+              fm.fileExists(atPath: im4m.path) else { return nil }
+        return .init(gaster: gaster, hBootPatcher: hb, img4: img4, im4m: im4m)
+    }
+
+    /// Which of the builder's pieces this copy of the app lacks, by name
+    /// ("hBootPatcher, img4"). Empty when everything is there.
+    private func nicotineReleaseToolsMissingNames() -> [String] {
+        let fm = FileManager.default
+        func has(_ name: String) -> Bool {
+            var dirs: [URL] = []
+            if let d = ToolLocator.bundledToolsDirectory { dirs.append(d) }
+            dirs.append(ToolLocator.userToolsDirectory)
+            dirs += ToolEnvironment.searchPaths.map { URL(fileURLWithPath: $0) }
+            return dirs.contains { fm.isExecutableFile(atPath: $0.appendingPathComponent(name).path) }
+        }
+        var missing: [String] = []
+        if nicotineTool(.gaster) == nil { missing.append("gaster") }
+        if !has("hBootPatcher") { missing.append("hBootPatcher") }
+        if !has("img4") { missing.append("img4") }
+        if let res = Bundle.main.resourceURL,
+           fm.fileExists(atPath: res.appendingPathComponent("nicotine-0x7000.im4m").path) {
+        } else { missing.append("nicotine-0x7000.im4m") }
+        return missing
     }
 
     /// The builder's tools that this app is missing (for the prepare blocker).
@@ -167,7 +187,8 @@ extension AppModel {
             return "Choose or import a Nicotine payload first — the release boot loaders are kept next to it."
         }
         if nicotineReleaseToolsMissing {
-            return "This copy of HomePod Hospital wasn't built with the boot-loader tools. Rebuild it with BUNDLE_TOOLS=1 (it bundles hBootPatcher and img4)."
+            let names = nicotineReleaseToolsMissingNames().joined(separator: ", ")
+            return "This copy of HomePod Hospital is missing: \(names). Rebuild it with BUNDLE_TOOLS=1 ./scripts/build-app.sh and check the build output for a WARNING about these."
         }
         if nicotine.prepareBusy { return "Preparation is already running." }
         if nicotine.isBusy { return "Wait for the current boot to finish first." }
