@@ -1,0 +1,14 @@
+LINK ./BCM.hcd -> BCM4349B1.hcd
+983d59cb3860fd590aca936af76563a52de0eeaeab8283c1877fc401ee84f0c0  106159  ./BCM4349B1.hcd
+LINK ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3-XX.bin -> brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.bin
+LINK ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3-XX.clm_blob -> brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.clm_blob
+LINK ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3-XX.txcap_blob -> brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.txcap_blob
+LINK ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3-XX.txt -> brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.txt
+da5c689c02c0eeeb96e620f195e273b4d116958012f34b279200f3961c31660b  875286  ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.bin
+f17050f96978780cc401a3bd4c7275d5f3c83a14661f4c902ca5aa5e228ddc47  10101  ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.clm_blob
+6a1305767df2f223ac14ff1bd2f67fa5fccbd665bb2da966c14503ff685f685d  233  ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.txcap_blob
+8bc411975cea782b10db2183f1c340f5a6c40fc4093b2d0a5f8628e46ba2c64f  6225  ./brcmfmac4357-pcie.apple,crush-TBRG-u-5.3.txt
+da5c689c02c0eeeb96e620f195e273b4d116958012f34b279200f3961c31660b  875286  ./brcmfmac4357-pcie.bin
+f17050f96978780cc401a3bd4c7275d5f3c83a14661f4c902ca5aa5e228ddc47  10101  ./brcmfmac4357-pcie.clm_blob
+6a1305767df2f223ac14ff1bd2f67fa5fccbd665bb2da966c14503ff685f685d  233  ./brcmfmac4357-pcie.txcap_blob
+8bc411975cea782b10db2183f1c340f5a6c40fc4093b2d0a5f8628e46ba2c64f  6225  ./brcmfmac4357-pcie.txt

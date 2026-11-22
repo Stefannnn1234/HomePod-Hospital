@@ -1,0 +1,2 @@
+wifi.py is from AsahiLinux/asahi-installer (SPDX: MIT). core.py is a minimal
+subset of the same project's asahi_firmware.core. See https://github.com/AsahiLinux/asahi-installer

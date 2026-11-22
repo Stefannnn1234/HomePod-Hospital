@@ -1,8 +1,14 @@
-# HomePodRestore — Knowledge Transfer
+# HomePod Hospital — Knowledge Transfer
+
+> **Name.** The app and project are called **HomePod Hospital** (renamed from HomePod Restore /
+> HomePodRestore in November 2026). The folder `~/homepod/HomePodRestoreApp/`, the Swift package,
+> its targets (`HomePodRestore`, `HomePodRestoreCore`) and the bundle identifier
+> `com.nicsfix.homepodrestore` keep the old name on purpose; the README's "Names" section says why.
+> The app can also boot **Nicotine**, the Linux system for the HomePod: see `nicotine-boot.md`.
 
 Last updated: 2026-11-16
 
-This is the hand-off document for the HomePodRestore project. It is written
+This is the hand-off document for the HomePod Hospital project. It is written
 so that a new AI session (or a person) with no prior context can continue
 the work. Read this first, then the topic docs it points to.
 
@@ -25,6 +31,7 @@ the work. Read this first, then the topic docs it points to.
 | `syscfg-write-re.md` | Reverse engineering of the SysCfg write path |
 | `syscfg-reference-capture.txt` | `syscfg list` capture from the working pod |
 | `writesink-architecture.md` | App write-path architecture |
+| `nicotine-boot.md` | Booting Nicotine (Linux) from the app: sequence, image folder, settings, what is unverified |
 
 ---
 

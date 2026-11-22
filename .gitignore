@@ -12,10 +12,15 @@ scripts/ssh-ramdisk-overlay/*
 # Generic A8 APTicket (vendored from SSHRD_Script for checkm8 boot)
 scripts/apticket-0x7000.shsh
 
-# Nicotine payload (boot files for "Boot Nicotine"): built outside this
-# repository and bundled into the app at build time (BUNDLE_NICOTINE=1) or
-# imported by the user. Never committed, wherever a copy lands.
-Nicotine/
+# Nicotine payload OUTPUT (the built boot files for "Boot Nicotine"): produced at
+# build time (BUNDLE_NICOTINE=1) into the app bundle, or imported by the user.
+# Never committed.
+#
+# NOTE: the lowercase build kit directory `nicotine/` IS tracked on purpose -- it
+# is the source a fresh checkout builds the payload from. Do NOT re-add a bare
+# `Nicotine/` rule: on a case-insensitive filesystem (default macOS) it also
+# matches `nicotine/` and silently un-tracks the whole kit. The specific output
+# paths below (plus .build/ and Resources/Nicotine/) already cover real artifacts.
 Nicotine-*/
 Nicotine-*.zip
 Resources/Nicotine/
@@ -29,3 +34,7 @@ screenlog.0
 build.log
 screenlog.0
 screenlog.0
+
+# Python bytecode caches (e.g. nicotine/tools/asahi_firmware/__pycache__)
+__pycache__/
+*.pyc
