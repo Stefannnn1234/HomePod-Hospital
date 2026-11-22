@@ -4,9 +4,9 @@
 Uses AsahiLinux's proven Apple->brcmfmac conversion (vendored in
 asahi_firmware/) on <rootfs>/usr/share/firmware/wifi, then lays the B1 (the
 HomePod's BCM4357 rev) firmware out under the exact names the Nicotine kernel
-loads, as listed in firmware-manifest.txt. Bluetooth (BCM*.hcd) is NOT produced
-here — audioOS has no such blob; it is optional (the pod boots and AirPlays
-without it). Python stdlib only.
+loads, as listed in firmware-manifest.txt. The Bluetooth patch (BCM4349B1.hcd)
+is carved out of <rootfs>/usr/sbin/BlueTool, which embeds it; it is optional
+(the pod boots and AirPlays without it). Python stdlib only.
 
     extract_wifi.py <rootfs> <out> <firmware-manifest.txt>
 """
@@ -18,6 +18,52 @@ from asahi_firmware.wifi import WiFiFWCollection  # noqa: E402
 
 REV = "b1"          # the HomePod's BCM4357 stepping
 VENDOR_TXT = "crush-TBRG-u"   # board TBRG, vendor USI -> the nvram variant
+BT_CONFIG = b"BCM4357B1 Olympic Tuborg USI"   # the HomePod's Bluetooth patch (USI module)
+BT_NAMES = ("BCM4349B1.hcd",)                 # the name btbcm asks for on this chip
+BT_LINKS = (("BCM.hcd", "BCM4349B1.hcd"),)
+
+
+def carve_bt_hcd(blob):
+    """Find the HomePod's Bluetooth patch inside BlueTool. An .hcd is a run of
+    HCI commands: Write_RAM (4C FC) records ending with one Launch_RAM (4E FC).
+    Returns the bytes, or None."""
+    at = 0
+    while True:
+        at = blob.find(b"BRCMcfgS", at)
+        if at < 0:
+            return None
+        start = at - 7                       # 4C FC len addr(4) precede the tag
+        at += 8
+        if start < 0 or BT_CONFIG not in blob[start:start + 256]:
+            continue
+        i = start
+        while i + 3 <= len(blob):
+            op, ln = blob[i:i + 2], blob[i + 2]
+            if op not in (b"\x4c\xfc", b"\x4e\xfc"):
+                break
+            i += 3 + ln
+            if op == b"\x4e\xfc":
+                return blob[start:i] if i <= len(blob) else None
+
+
+def extract_bt(rootfs, brcm):
+    tool = os.path.join(rootfs, "usr", "sbin", "BlueTool")
+    try:
+        hcd = carve_bt_hcd(open(tool, "rb").read())
+    except OSError:
+        hcd = None
+    if not hcd:
+        print("[!] Bluetooth firmware not found in %s (Bluetooth will be off; everything else works)" % tool)
+        return
+    for n in BT_NAMES:
+        with open(os.path.join(brcm, n), "wb") as f:
+            f.write(hcd)
+    for link, tgt in BT_LINKS:
+        dst = os.path.join(brcm, link)
+        if os.path.lexists(dst):
+            os.remove(dst)
+        os.symlink(tgt, dst)
+    print("[*] Bluetooth firmware: %s (%d bytes) from BlueTool" % (BT_NAMES[0], len(hcd)))
 
 
 def ext_of(name):
@@ -90,7 +136,8 @@ def main():
                 f.write(by_ext[e])
             wrote += 1
 
-    print("[*] WiFi firmware: %d files, %d symlinks written (Bluetooth .hcd skipped: %d)" % (wrote, links, skipped_bt))
+    print("[*] WiFi firmware: %d files, %d symlinks written" % (wrote, links))
+    extract_bt(rootfs, brcm)
     for need in ("brcmfmac4357-pcie.bin", "brcmfmac4357-pcie.txt"):
         if not os.path.exists(os.path.join(brcm, need)):
             print("[-] essential firmware missing: %s" % need)
