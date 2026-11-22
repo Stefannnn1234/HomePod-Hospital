@@ -8,8 +8,14 @@ loads, as listed in firmware-manifest.txt. The Bluetooth patch (BCM4349B1.hcd)
 is carved out of <rootfs>/usr/sbin/BlueTool, which embeds it; it is optional
 (the pod boots and AirPlays without it). Python stdlib only.
 
-    extract_wifi.py <rootfs> <out> <firmware-manifest.txt>
+    extract_wifi.py <rootfs> <out> <firmware-manifest.txt> [wifi-src]
+
+wifi-src, when given, is a folder in Apple's layout (C-4357__s-B1/...) to take
+the WiFi files from instead of <rootfs>/usr/share/firmware/wifi. The build uses
+it for the launch firmware fetched by fetch_launch_wifi.py: the driver was
+brought up against that version (13.45.26) and the 18.x one does not start.
 """
+import hashlib
 import os
 import sys
 
@@ -18,6 +24,23 @@ from asahi_firmware.wifi import WiFiFWCollection  # noqa: E402
 
 REV = "b1"          # the HomePod's BCM4357 stepping
 VENDOR_TXT = "crush-TBRG-u"   # board TBRG, vendor USI -> the nvram variant
+# Two settings of our own, appended to Apple's calibration file exactly as in the
+# build the driver was validated with: firmware error messages on its console,
+# and a placeholder address (the real one is set from the pod at run time).
+NVRAM_EXTRA = b"msglevel=0x1\nmacaddr=02:00:00:45:67:89\n"
+
+
+def manifest_index(manifest):
+    """{name: (sha256, size)} for the regular files the manifest lists."""
+    idx = {}
+    for line in open(manifest):
+        parts = line.split(None, 2)
+        if len(parts) == 3 and not line.startswith("LINK ") and parts[1].isdigit():
+            name = parts[2].strip()
+            idx[name[2:] if name.startswith("./") else name] = (parts[0], int(parts[1]))
+    return idx
+
+
 BT_CONFIG = b"BCM4357B1 Olympic Tuborg USI"   # the HomePod's Bluetooth patch (USI module)
 BT_NAMES = ("BCM4349B1.hcd",)                 # the name btbcm asks for on this chip
 BT_LINKS = (("BCM.hcd", "BCM4349B1.hcd"),)
@@ -79,11 +102,11 @@ def is_bt(name):
 
 
 def main():
-    if len(sys.argv) != 4:
-        print("usage: extract_wifi.py <rootfs> <out> <manifest>")
+    if len(sys.argv) not in (4, 5):
+        print("usage: extract_wifi.py <rootfs> <out> <manifest> [wifi-src]")
         return 2
     rootfs, out, manifest = sys.argv[1], sys.argv[2], sys.argv[3]
-    src = os.path.join(rootfs, "usr", "share", "firmware", "wifi")
+    src = sys.argv[4] if len(sys.argv) == 5 else os.path.join(rootfs, "usr", "share", "firmware", "wifi")
     if not os.path.isdir(src):
         print("[-] no Apple WiFi firmware at %s" % src)
         return 1
@@ -104,6 +127,19 @@ def main():
     if missing_src:
         print("[-] 18.3 WiFi firmware is missing %s for %s" % (missing_src, REV))
         return 1
+
+    # Bring the two files the driver work was validated with to their exact
+    # validated form: the calibration file gets our two settings, and the
+    # firmware is zero-padded to the validated length when it is that version.
+    by_ext["txt"] = by_ext["txt"] + NVRAM_EXTRA
+    known = manifest_index(manifest)
+    want = known.get("brcmfmac4357-pcie.bin")
+    if want and len(by_ext["bin"]) <= want[1]:
+        padded = by_ext["bin"] + bytes(want[1] - len(by_ext["bin"]))
+        if hashlib.sha256(padded).hexdigest() == want[0]:
+            by_ext["bin"] = padded
+    validated = [e for e, n in (("bin", "brcmfmac4357-pcie.bin"), ("txt", "brcmfmac4357-pcie.txt"))
+                 if n in known and hashlib.sha256(by_ext[e]).hexdigest() == known[n][0]]
 
     brcm = out
     os.makedirs(brcm, exist_ok=True)
@@ -137,6 +173,10 @@ def main():
             wrote += 1
 
     print("[*] WiFi firmware: %d files, %d symlinks written" % (wrote, links))
+    if len(validated) == 2:
+        print("[+] WiFi firmware and calibration are byte-identical to the validated Nicotine build")
+    else:
+        print("[!] WiFi firmware is NOT the version the driver was validated with; WiFi may not start")
     extract_bt(rootfs, brcm)
     for need in ("brcmfmac4357-pcie.bin", "brcmfmac4357-pcie.txt"):
         if not os.path.exists(os.path.join(brcm, need)):

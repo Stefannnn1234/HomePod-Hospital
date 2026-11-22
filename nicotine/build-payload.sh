@@ -22,12 +22,13 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-FW=""; ROOTFS=""; ADT=""; DTIM4P=""; OUT=""
+FW=""; ROOTFS=""; ADT=""; DTIM4P=""; OUT=""; WIFISRC=""
 BOOTARGS="${BOOTARGS:-earlycon console=ttySAC0,115200 loglevel=8 pd_ignore_unused clk_ignore_unused rdinit=/init isolcpus=1 irqaffinity=0}"
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--firmware) FW="$2"; shift 2 ;;              # a ready lib/firmware/brcm dir
 		--rootfs) ROOTFS="$2"; shift 2 ;;            # an unpacked audioOS rootfs to extract firmware from
+		--wifi-src) WIFISRC="$2"; shift 2 ;;         # Apple-layout WiFi folder (default: fetched from audioOS 11.2.5)
 		--adt) ADT="$2"; shift 2 ;;                  # Apple's raw B238a device tree
 		--devicetree-im4p) DTIM4P="$2"; shift 2 ;;   # the OTA's DeviceTree im4p, to unwrap
 		--out) OUT="$2"; shift 2 ;;
@@ -41,7 +42,17 @@ WORK0="$(mktemp -d)"; trap 'rm -rf "$WORK0"' EXIT
 if [ -z "$FW" ]; then
 	[ -n "$ROOTFS" ] && [ -d "$ROOTFS" ] || { echo "give --firmware <dir> or --rootfs <audioOS rootfs>."; exit 2; }
 	FW="$WORK0/firmware"
-	python3 -I "$HERE/tools/extract_wifi.py" "$ROOTFS" "$FW" "$HERE/firmware-manifest.txt" || exit 1
+	# WiFi: the launch firmware (13.45.26) from Apple's audioOS 11.2.5 update, the
+	# version the driver was brought up against. Bluetooth: from the rootfs given.
+	if [ -z "$WIFISRC" ]; then
+		WIFISRC="$WORK0/wifi-src"
+		if ! python3 -I "$HERE/tools/fetch_launch_wifi.py" "$WIFISRC"; then
+			echo "[!] Could not fetch the launch WiFi firmware from Apple (no network?)."
+			echo "    Falling back to the firmware in the root filesystem: WiFi will NOT work on the pod."
+			WIFISRC="$ROOTFS/usr/share/firmware/wifi"
+		fi
+	fi
+	python3 -I "$HERE/tools/extract_wifi.py" "$ROOTFS" "$FW" "$HERE/firmware-manifest.txt" "$WIFISRC" || exit 1
 fi
 [ -d "$FW" ] || { echo "firmware dir not found: $FW"; exit 2; }
 # device tree: a raw ADT, or unwrapped from the OTA's DeviceTree im4p.
