@@ -149,10 +149,10 @@ extension AppModel {
             return nil
         }
         guard let gaster = nicotineTool(.gaster),
-              let hb = helper("hBootPatcher"), let img4 = helper("img4"),
+              let hb = helper("hBootPatcher"),
               let im4m = Bundle.main.resourceURL?.appendingPathComponent("nicotine-0x7000.im4m"),
               fm.fileExists(atPath: im4m.path) else { return nil }
-        return .init(gaster: gaster, hBootPatcher: hb, img4: img4, im4m: im4m)
+        return .init(gaster: gaster, hBootPatcher: hb, im4m: im4m)
     }
 
     /// Which of the builder's pieces this copy of the app lacks, by name
@@ -169,7 +169,6 @@ extension AppModel {
         var missing: [String] = []
         if nicotineTool(.gaster) == nil { missing.append("gaster") }
         if !has("hBootPatcher") { missing.append("hBootPatcher") }
-        if !has("img4") { missing.append("img4") }
         if let res = Bundle.main.resourceURL,
            fm.fileExists(atPath: res.appendingPathComponent("nicotine-0x7000.im4m").path) {
         } else { missing.append("nicotine-0x7000.im4m") }

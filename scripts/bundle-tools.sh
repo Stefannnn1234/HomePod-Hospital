@@ -40,26 +40,23 @@ else
   echo "         Boot Nicotine / SSH ramdisk / Factory DIAGS will ask the user to install tools."
 fi
 
-echo "==> Building hBootPatcher + bundling img4 (for the in-app release boot-loader builder)"
-# hBootPatcher comes from HoolockLinux's remote_boot (MIT); pinned, built once.
+echo "==> Building hBootPatcher (for the in-app release boot-loader builder)"
+# hBootPatcher comes from HoolockLinux's remote_boot (MIT); pinned. It is compiled
+# with clang directly: its Makefile needs GNU Make 4, and macOS ships 3.81.
 HB_REV=e254a58b7d7c68c9e34a407a0beb0aab4861a6b6
-MAKE="$(command -v gmake || command -v make)"
 if [ ! -d "$WORK/remote_boot/.git" ]; then
   git -c url."https://github.com/".insteadOf="git@github.com:" clone https://github.com/HoolockLinux/remote_boot "$WORK/remote_boot"
 fi
-( cd "$WORK/remote_boot" && git fetch -q origin && git checkout -q "$HB_REV"   && git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --recursive vendor/hBootPatcher   && "$MAKE" -C vendor/hBootPatcher > "$WORK/hbootpatcher-build.log" 2>&1 )   && cp "$WORK/remote_boot/vendor/hBootPatcher/hBootPatcher" "$BIN/hBootPatcher"   || { tail -20 "$WORK/hbootpatcher-build.log" 2>/dev/null; echo "WARNING: hBootPatcher didn't build — the in-app release boot-loader builder will be disabled."; }
-# img4 (payload wrap + sign): PATH, else build xerub/img4lib from source (public,
-# MIT). COMMONCRYPTO=1 uses macOS CommonCrypto, so it needs no OpenSSL and links
-# nothing outside the system — nothing private, publicly buildable.
-IMG4="$(command -v img4 || true)"
-if [ -z "$IMG4" ]; then
-  if [ ! -d "$WORK/img4lib/.git" ]; then
-    git -c url."https://github.com/".insteadOf="git@github.com:" clone https://github.com/xerub/img4lib "$WORK/img4lib"
-  fi
-  ( cd "$WORK/img4lib" && git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --recursive     && "${MAKE:-make}" COMMONCRYPTO=1 > "$WORK/img4lib-build.log" 2>&1 )     && IMG4="$WORK/img4lib/img4"     || { tail -20 "$WORK/img4lib-build.log" 2>/dev/null; echo "WARNING: img4 didn't build."; IMG4=""; }
-fi
-if [ -n "$IMG4" ] && [ -x "$IMG4" ]; then cp "$IMG4" "$BIN/img4"; echo "  + img4 ($IMG4)"; else
-  echo "WARNING: img4 unavailable — the in-app release boot-loader builder will be disabled."
+HB="$WORK/remote_boot/vendor/hBootPatcher"
+if ( cd "$WORK/remote_boot" && git fetch -q origin && git checkout -q "$HB_REV" \
+       && git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --recursive vendor/hBootPatcher ) \
+   && ( cd "$HB" && clang -O2 -w -I./include -I./plooshfinder/include \
+          src/*.c patches/*.c plooshfinder/src/*.c plooshfinder/src/formats/*.c plooshfinder/src/asm/*.c \
+          -o "$WORK/hBootPatcher.bin" ) > "$WORK/hbootpatcher-build.log" 2>&1; then
+  cp "$WORK/hBootPatcher.bin" "$BIN/hBootPatcher"; echo "  + hBootPatcher"
+else
+  tail -20 "$WORK/hbootpatcher-build.log" 2>/dev/null
+  echo "hBootPatcher did not build; the Nicotine boot loaders cannot be made without it."; exit 1
 fi
 
 echo "==> Copying SysCfg / builder tools (img4tool, ra1nsn0w, tsschecker, iproxy, sshpass)"
@@ -71,19 +68,26 @@ chmod +x "$BIN"/*
 
 echo "==> Bundling libraries"
 ARGS=()
-for t in "$BIN"/idevicerestore "$BIN"/irecovery "$BIN"/img4tool "$BIN"/img4 "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
+for t in "$BIN"/idevicerestore "$BIN"/irecovery "$BIN"/img4tool "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
   [ -f "$t" ] && ARGS+=(-x "$t")
 done
 SRCH=(-s "$(brew --prefix)/lib" -s /usr/local/lib)
 for f in openssl@3 libplist libusbmuxd libimobiledevice-glue libgeneral; do
   d="$(brew --prefix "$f" 2>/dev/null)/lib"; [ -d "$d" ] && SRCH+=(-s "$d")
 done
-dylibbundler -of -b -cd "${ARGS[@]}" -d "$FW" -p @executable_path/../../Frameworks/ "${SRCH[@]}" >/dev/null
+# stdin is closed on purpose: when dylibbundler cannot find a library it asks for
+# its folder and waits, which looked like a hang here because its output was hidden.
+if ! dylibbundler -of -b -cd "${ARGS[@]}" -d "$FW" -p @executable_path/../../Frameworks/ "${SRCH[@]}" \
+     < /dev/null > "$WORK/dylibbundler.log" 2>&1; then
+  echo "Bundling libraries failed. Last lines of $WORK/dylibbundler.log:"
+  tail -25 "$WORK/dylibbundler.log"
+  exit 1
+fi
 
 # Record the CPU architecture(s) so the app ignores these on other CPUs.
 lipo -archs "$BIN/idevicerestore" > "$BIN/ARCHS"
 echo "Bundled tools for: $(cat "$BIN/ARCHS")"
-for t in "$BIN"/gaster "$BIN"/irecovery "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/img4 "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
+for t in "$BIN"/gaster "$BIN"/irecovery "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
   [ -f "$t" ] || continue
   LEAKS="$(otool -L "$t" | tail -n +2 | grep -vE "/usr/lib/|/System/|@executable_path" || true)"
   if [ -n "$LEAKS" ]; then echo "WARNING: $(basename "$t") still links outside the bundle:"; echo "$LEAKS"; fi

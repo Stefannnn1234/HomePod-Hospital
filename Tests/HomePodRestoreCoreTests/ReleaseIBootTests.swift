@@ -148,8 +148,7 @@ final class ReleaseIBootTests: XCTestCase {
     func testBuilderReportsMissingTool() async throws {
         let out = tmp.appendingPathComponent("release-iboot", isDirectory: true)
         let bogus = tmp.appendingPathComponent("nope")           // not executable
-        let tools = ReleaseIBootBuilder.Tools(gaster: bogus, hBootPatcher: bogus, img4: bogus,
-                                              im4m: bogus)
+        let tools = ReleaseIBootBuilder.Tools(gaster: bogus, hBootPatcher: bogus, im4m: bogus)
         let builder = ReleaseIBootBuilder(outputDir: out, tools: tools,
                                           otaURLOverride: URL(string: "https://example.invalid/x.zip")!)
         do {

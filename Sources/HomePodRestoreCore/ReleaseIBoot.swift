@@ -17,25 +17,61 @@ import FoundationNetworking
 //   download iBSS.im4p / iBEC.im4p  (audioOS 16.4 OTA, HTTP range reads)
 //   → gaster pwn ; gaster decrypt   (checkm8 AES on the pod → raw iBoot)
 //   → hBootPatcher -airs            (sig-check, IORVBAR, AES)
-//   → img4 -i … -M <IM4M> -A -T ibss/ibec   (wrap + sign with the A8 IM4M)
+//   → IMG4Wrap (in this file)       (wrap + sign with the A8 IM4M; no external tool)
 //
 // The IM4M is the generic A8 ticket that ships in this repository's Nicotine
 // kit (nicotine/prebuilt/0x7000.im4m, copied into the app's Resources by
 // build-app.sh). Nothing outside the repository is needed. See
 // docs/nicotine-boot.md.
 
+/// Wraps a raw payload and an IM4M ticket into an IMG4 file:
+/// `SEQUENCE { IA5 "IMG4", SEQUENCE { IA5 "IM4P", IA5 fourcc, IA5 description,
+/// OCTET STRING payload }, [0] { IM4M } }`. The same bytes nicotine/tools/pack.py
+/// writes, so the app needs no img4 tool.
+public enum IMG4Wrap {
+    static func derLength(_ n: Int) -> [UInt8] {
+        if n < 0x80 { return [UInt8(n)] }
+        var bytes: [UInt8] = []
+        var v = n
+        while v > 0 {
+            bytes.insert(UInt8(v & 0xff), at: 0)
+            v >>= 8
+        }
+        return [UInt8(0x80 | bytes.count)] + bytes
+    }
+
+    static func tlv(_ tag: UInt8, _ content: [UInt8]) -> [UInt8] {
+        return [tag] + derLength(content.count) + content
+    }
+
+    static func ia5(_ text: String) -> [UInt8] {
+        return tlv(0x16, Array(text.utf8))
+    }
+
+    public static func wrap(payload: Data, fourcc: String, im4m: Data,
+                            description: String = "Unknown") -> Data {
+        var im4pBody: [UInt8] = ia5("IM4P")
+        im4pBody += ia5(fourcc)
+        im4pBody += ia5(description)
+        im4pBody += tlv(0x04, [UInt8](payload))
+        var img4Body: [UInt8] = ia5("IMG4")
+        img4Body += tlv(0x30, im4pBody)
+        img4Body += tlv(0xA0, [UInt8](im4m))
+        return Data(tlv(0x30, img4Body))
+    }
+}
+
 /// Builds `iBSS.img4` / `iBEC.img4` in a folder, streaming progress.
 public final class ReleaseIBootBuilder: @unchecked Sendable {
     /// The bundled tools the build needs. The model resolves them (ToolLocator
-    /// for gaster; bundled Resources for hBootPatcher/img4/the IM4M).
+    /// for gaster; bundled Resources for hBootPatcher and the IM4M).
     public struct Tools: Sendable {
         public var gaster: URL
         public var hBootPatcher: URL
-        public var img4: URL
         /// Generic A8 IM4M (nicotine-0x7000.im4m in Resources), used to sign the wrap.
         public var im4m: URL
-        public init(gaster: URL, hBootPatcher: URL, img4: URL, im4m: URL) {
-            self.gaster = gaster; self.hBootPatcher = hBootPatcher; self.img4 = img4
+        public init(gaster: URL, hBootPatcher: URL, im4m: URL) {
+            self.gaster = gaster; self.hBootPatcher = hBootPatcher
             self.im4m = im4m
         }
     }
@@ -143,8 +179,7 @@ public final class ReleaseIBootBuilder: @unchecked Sendable {
         let fm = FileManager.default
         try checkCancelled()
         stage(.checking, nil)
-        for (name, url) in [("gaster", tools.gaster), ("hBootPatcher", tools.hBootPatcher),
-                            ("img4", tools.img4)] {
+        for (name, url) in [("gaster", tools.gaster), ("hBootPatcher", tools.hBootPatcher)] {
             guard fm.isExecutableFile(atPath: url.path) else { throw Failure.toolMissing(name) }
         }
         guard fm.fileExists(atPath: tools.im4m.path) else { throw Failure.toolMissing("nicotine-0x7000.im4m") }
@@ -186,9 +221,10 @@ public final class ReleaseIBootBuilder: @unchecked Sendable {
                                        what: "Patching \(tag) (hBootPatcher)", onLog: onLog)
                 stage(.wrapping, nil)
                 try? FileManager.default.removeItem(at: out)
-                try await self.runTool(self.tools.img4, ["-i", patched.path, "-o", out.path,
-                                                         "-M", im4m.path, "-A", "-T", tag],
-                                       what: "Signing \(tag) (img4)", onLog: onLog)
+                onLog("Signing \(tag)")
+                let rawPayload = try Data(contentsOf: patched)
+                let ticket = try Data(contentsOf: im4m)
+                try IMG4Wrap.wrap(payload: rawPayload, fourcc: tag, im4m: ticket).write(to: out)
             }
         }
 
