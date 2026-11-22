@@ -537,8 +537,8 @@ public extension ErrorCatalog {
     static let nicotine: [KnownIssue] = [
         KnownIssue(id: "nicotine.files",
                    title: "The Nicotine image folder isn't complete",
-                   explanation: "The boot needs five files in the folder's img4 directory: the two patched bootloaders (iBSS, iBEC), Apple's device tree, an empty trust cache and the Nicotine image itself.",
-                   suggestions: ["Choose the folder that contains boot-linux.sh (it has an img4 folder inside).",
+                   explanation: "The boot needs three files in the payload's img4 folder: Apple's device tree, an empty trust cache and the Nicotine image itself. (The boot loaders are built separately, on the Boot loaders card.)",
+                   suggestions: ["Choose a Nicotine payload folder (it has an img4 folder inside), or rebuild the app so the payload is built in.",
                                  "If a file is missing, copy the whole folder again from where you keep Nicotine builds."],
                    severity: .fatal, category: .mac, patterns: []),
         KnownIssue(id: "nicotine.damaged",

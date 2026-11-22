@@ -302,8 +302,8 @@ Pull `local-mac-address` / `bluetooth-address` properties, compare to SysCfg WMa
 **Data format.**
 ```json
 {"tool":"radio","ok":true,
- "wifi":{"present":true,"driver":"AppleBCMWLANCore","mac":"d0:81:7a:e3:76:94","matchesSysCfg":true},
- "bt":{"present":true,"mac":"d0:81:7a:e3:76:95","matchesSysCfg":true},
+ "wifi":{"present":true,"driver":"AppleBCMWLANCore","mac":"02:aa:bb:cc:dd:01","matchesSysCfg":true},
+ "bt":{"present":true,"mac":"02:aa:bb:cc:dd:02","matchesSysCfg":true},
  "verdict":"pass"}
 ```
 
@@ -409,7 +409,7 @@ the daily-driver: tech plugs in an intake unit, clicks "Run full diagnostics," g
 boot-once-then-sequence-probes structure, each probe appending its JSON to a bundle. One SSH session, many
 `run()` calls.
 
-**Data format.** `{"serial":"CC4VKKTQHQK8","timestamp":"...","tools":[{...P1},{...P2},...],
+**Data format.** `{"serial":"SERIAL000001","timestamp":"...","tools":[{...P1},{...P2},...],
 "overall":"warn"}` — plus save-to-disk (reuse `saveDiagnostics`) so each intake gets an archived report.
 
 **App integration.** A prominent "Run full diagnostics" button on the booted-pod card; results render as

@@ -5,7 +5,7 @@ import Foundation
 // The factory DIAGS environment ("smokeyshell", see docs/diags-boot.md) is
 // driven over UART. It prints a prompt of the form
 //
-//     [00092951386A6F26] :-)
+//     [0000000000000001] :-)
 //
 // (the unit's ECID in hex, then `:-) ` with a trailing space) and takes
 // plain-text commands ended by a newline. Its output is coloured with ANSI
@@ -53,8 +53,8 @@ public struct DiagsCommandResult: Sendable, Equatable {
 /// One line of `syscfg list`: a four-character key and its printed value.
 public struct SysCfgEntry: Sendable, Equatable, Identifiable {
     public let key: String
-    /// The value as DIAGS printed it: text for string keys (`CC4VKKTQHQK8`),
-    /// space-separated 32-bit hex words for binary keys (`0xE37A81D0 0x00009476 …`).
+    /// The value as DIAGS printed it: text for string keys (`SERIAL000001`),
+    /// space-separated 32-bit hex words for binary keys (`0xCCBBAA02 0x000001DD …`).
     public let value: String
 
     public var id: String { key }
@@ -181,7 +181,7 @@ public final class DiagsSerialSession: @unchecked Sendable {
         return _ecid
     }
 
-    /// The last prompt line seen, e.g. `[00092951386A6F26] :-)`.
+    /// The last prompt line seen, e.g. `[0000000000000001] :-)`.
     public var lastPrompt: String? {
         lock.lock(); defer { lock.unlock() }
         return _lastPrompt
@@ -567,7 +567,7 @@ public final class DiagsSerialSession: @unchecked Sendable {
     }
 
     /// Parses `syscfg list` output. DIAGS prints one entry per line as
-    /// `Key: SrNm = CC4VKKTQHQK8`; a long binary value may continue on
+    /// `Key: SrNm = SERIAL000001`; a long binary value may continue on
     /// following lines of hex words, which are joined to the entry.
     public static func parseSysCfgList(_ text: String) -> [SysCfgEntry] {
         var entries: [(key: String, value: String)] = []

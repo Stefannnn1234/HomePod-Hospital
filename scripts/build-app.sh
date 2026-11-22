@@ -4,19 +4,19 @@
 # (The app was called "HomePod Restore" before; the Swift package, the binary
 # inside the bundle and the bundle identifier keep their old names on purpose.)
 #
-#   ./scripts/build-app.sh                 app only; users install tools via Setup
-#   BUNDLE_TOOLS=1 ./scripts/build-app.sh  also bundle gaster/idevicerestore/irecovery
-#                                          inside the app (no Homebrew needed to restore)
-#   BUNDLE_NICOTINE=1 ./scripts/build-app.sh
-#                                          also put a Nicotine payload inside the app
-#                                          (Contents/Resources/Nicotine), so "Boot Nicotine"
-#                                          works on a Mac that has never seen the project.
-#                                          Taken from NICOTINE_PAYLOAD_DIR, default
-#                                          ~/Downloads/diagsstuffnic/linux-homepod/public;
-#                                          every file its MANIFEST lists is checked and copied.
-#                                          The payload is never part of this repository.
-#   BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh
-#                                          the fully self-contained app (see docs/nicotine-boot.md)
+#   ./scripts/build-app.sh                 the full, self-contained app: restore tools
+#                                          (gaster, idevicerestore, irecovery, hBootPatcher)
+#                                          and a Nicotine payload inside. The payload is
+#                                          built from the nicotine/ kit in this repository
+#                                          plus Apple's own public downloads; nothing
+#                                          proprietary is stored in or shipped with the repo.
+#   BUNDLE_TOOLS=0 ./scripts/build-app.sh  leave the tools out (users install them via Setup)
+#   BUNDLE_NICOTINE=0 ./scripts/build-app.sh
+#                                          leave the Nicotine payload out (it can be imported
+#                                          in the app later)
+#   NICOTINE_PAYLOAD_DIR=<dir>             bundle that ready-made payload instead of building one
+#   NICOTINE_SRC_IPSW=<18.3.ipsw>          the audioOS IPSW to build from (else a local copy is
+#                                          looked for, else it is downloaded once, about 3.4 GB)
 #   SIGN_ID="Developer ID Application: …"  sign with your certificate (default: ad-hoc)
 #   VERSION=1.0.0                          version string
 #
@@ -89,12 +89,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-if [ "${BUNDLE_TOOLS:-0}" = "1" ]; then
+if [ "${BUNDLE_TOOLS:-1}" = "1" ]; then
   "$ROOT/scripts/bundle-tools.sh" "$APP"
 fi
 
 # ---- Nicotine payload (optional): the boot files for "Boot Nicotine", inside the app
-if [ "${BUNDLE_NICOTINE:-0}" = "1" ]; then
+if [ "${BUNDLE_NICOTINE:-1}" = "1" ]; then
   DEST="$APP/Contents/Resources/Nicotine"
   # Where the payload comes from:
   #  - NICOTINE_PAYLOAD_DIR set        -> use that prebuilt payload.
@@ -162,12 +162,12 @@ if [ "${BUNDLE_NICOTINE:-0}" = "1" ]; then
   # scripts are run with /bin/bash by the app, but keep them runnable; nothing here is Mach-O
   find "$DEST" -name "*.sh" -exec chmod 755 {} \;
   echo "    $COPIED files, $(grep '^build=' "$PAYLOAD/MANIFEST" | head -n 1 | tr -d '\r') ($(du -sh "$DEST" | awk '{print $1}'))"
-  if [ "${BUNDLE_TOOLS:-0}" = "1" ]; then
+  if [ "${BUNDLE_TOOLS:-1}" = "1" ]; then
     for t in gaster irecovery; do
       [ -x "$APP/Contents/Resources/bin/$t" ] || { echo "The Nicotine boot needs $t, and it did not get bundled (is it installed on this Mac?)."; exit 1; }
     done
   else
-    echo "    Note: built without BUNDLE_TOOLS=1. A fresh Mac will still have to install gaster and irecovery (Nicotine page → Install tools…)."
+    echo "    Note: built with BUNDLE_TOOLS=0. A fresh Mac will still have to install gaster and irecovery (Nicotine page → Install tools…)."
   fi
 fi
 

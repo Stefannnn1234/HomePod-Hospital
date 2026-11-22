@@ -376,7 +376,7 @@ public struct EffaceableLockerSink: WriteSink {
 
         public init(toolPath: String = "/usr/local/bin/syscfg-probe",
                     probeScriptPath: String = "/usr/local/bin/hpdiag-getlocker",
-                    stagePath: String = "/tmp/syscfg.bin",
+                    stagePath: String = "/private/var/tmp/syscfg.bin",
                     confirmedTypeID: UInt32? = nil,
                     candidateFourCCs: [String] = ["SCfg", "SyCf", "ScFg", "Cnfg", "nvSC"],
                     expectedBlobSize: Int = 131072,
@@ -551,7 +551,7 @@ public struct DiagsKextSink: WriteSink {
         public var writeCommandTemplate: String?
         public var validation: WriteSinkValidation
         public init(toolPath: String = DiagsKextSink.defaultToolPath,
-                    stagePath: String = "/tmp/syscfg.bin",
+                    stagePath: String = "/private/var/tmp/syscfg.bin",
                     writeCommandTemplate: String? = nil,
                     validation: WriteSinkValidation = .init()) {
             self.toolPath = toolPath

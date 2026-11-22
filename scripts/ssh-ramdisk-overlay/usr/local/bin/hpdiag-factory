@@ -1,0 +1,324 @@
+#!/bin/sh
+# hpdiag-factory - factory data (SysCfg) completeness
+# Runs on the HomePod SSH ramdisk (read-only probes only). Output: one JSON
+# object between ===HPDIAG_JSON_BEGIN=== / ===HPDIAG_JSON_END===.
+PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+
+# ---- shared helpers (duplicated in every hpdiag-* script on purpose, so each
+# ---- script stays standalone and can be copied/run on its own) --------------
+# Tools: the SSH ramdisk (audioOS 17.5 restore ramdisk + SSHRD overlay) has NO
+# awk, tr, sort, od, strings, base64 or timeout.  Everything below uses only
+# shell builtins (POSIX sh features - /bin/sh there is bash 3.2) plus sed, grep,
+# head, cut and wc, all of which the ramdisk carries.  Keep it that way.
+TAB=$(printf '\t')
+NL='
+'
+UC=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+LC=abcdefghijklmnopqrstuvwxyz
+J=""       # accumulated ,"key":value pairs for the output object
+NOTES=""   # human-readable notes, joined with "; "
+
+have() { command -v "$1" >/dev/null 2>&1; }
+# ioreg wrapper: -w 0 disables line truncation so long data blobs survive.
+# This ramdisk's ioreg colours its output with ANSI escapes even into a pipe
+# (every value arrives as ESC[0;31m99 ... ESC[0;0m), which breaks all numeric
+# and string matching, so they are stripped here.  ESC is produced with printf
+# because the ramdisk's BSD sed does not understand "\x1b" (a GNU extension).
+ESC=$(printf '\033')
+ior() { ioreg -w 0 "$@" 2>/dev/null | sed -e "s/${ESC}\[[0-9;]*m//g"; }
+# NEVER dump the whole registry with properties ("ioreg -l" / "ior -l"): on this
+# ramdisk that serialises every driver's properties and kernel-panics the pod.
+# Two targeted forms are allowed instead:
+#   nodetree CLASS...  names only.  "ioreg -r -c CLASS" WITHOUT -l prints just
+#                      the "+-o name <class ...>" lines of each matching subtree
+#                      and reads no property at all.  De-duplicated by entry id.
+#   ior -r [-d 1] -c CLASS -l   properties of one specific class (-d 1 = that
+#                      node only, not its children).
+nodetree() {
+  for c in "$@"; do ior -r -c "$c"; done | grep -e '+-o ' | {
+    nt_seen=$NL
+    while IFS= read -r nt_l || [ -n "$nt_l" ]; do
+      nt_k=${nt_l##*, id }; nt_k=${nt_k%%,*}
+      case "$nt_k" in
+        ''|*[!0-9A-Za-z_]*)
+          case "$nt_seen" in *"$NL$nt_k$NL"*) continue ;; esac
+          nt_seen="$nt_seen$nt_k$NL" ;;
+        *)
+          eval "nt_v=\${nt_id_$nt_k-}"
+          [ -n "$nt_v" ] && continue
+          eval "nt_id_$nt_k=1" ;;
+      esac
+      printf '%s\n' "$nt_l"
+    done
+  }
+}
+# Keep printable ASCII + newlines only, so output can never break JSON.
+# (LC_ALL=C, so the bracket range is plain bytes 0x20-0x7e.)
+clean() { sed -e "s/$TAB/ /g" -e 's/[^ -~]//g'; }
+esc() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+# stdin lines -> one line, joined with "," / with a literal \n
+joincomma() { sed -e ':a' -e '$!N' -e 's/\n/,/' -e 'ta'; }
+joinnl() { sed -e ':a' -e '$!N' -e 's/\n/\\n/' -e 'ta'; }
+# lowercase stdin (ASCII)
+lower() { sed -e "y/$UC/$LC/"; }
+# stdin -> one JSON string literal (newlines become \n)
+json_str() { printf '"%s"' "$(clean | esc | joinnl)"; }
+jstr() { printf '%s' "$1" | json_str; }
+# Raw text for the app's "show raw" view, capped so SSH output stays small.
+jraw() { printf '%s' "$1" | head -c "${HPDIAG_RAW_MAX:-6000}" | json_str; }
+# Number if plain decimal, quoted string otherwise, nothing if empty.
+jnum() {
+  case "$1" in
+    '') ;;
+    0) printf 0 ;;
+    0*|*[!0-9]*) jstr "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+# ioreg text -> key=value lines (tree art and string quotes stripped)
+kvlist() {
+  clean | sed -n 's/^[ |]*"\([^"]*\)" = \(.*\)$/\1=\2/p' | sed -e 's/="\([^"]*\)"$/=\1/'
+}
+# kvlist on stdin -> the lines whose lowercased key (text before the first "=")
+# matches the ERE $1, in input order.  The match runs on a key-only copy, so
+# "^...$" anchor to the key; grep -n maps the hits back to the full lines.
+kvsel() {
+  ks_kv=$(cat)
+  [ -n "$ks_kv" ] || return 0
+  ks_n=$(printf '%s\n' "$ks_kv" | sed -e 's/=.*$//' | lower | grep -n -E -e "$1" | cut -d: -f1)
+  [ -n "$ks_n" ] || return 0
+  printf '%s\n' "$ks_kv" | sed -n "$(printf '%s\n' "$ks_n" | sed -e 's/$/p/')"
+}
+# kvlist on stdin -> value of the first key matching lowercase ERE $1
+pick() { kvsel "$1" | head -n 1 | sed -e 's/^[^=]*=//'; }
+# like pick, but only accepts decimal / 0x-hex values; prints decimal
+picknum() {
+  v=$(grep -E -e '^[^=]*=(0x[0-9a-fA-F]+|[0-9]+)$' | pick "$1")
+  case "$v" in 0x*) printf '%d' "$v" 2>/dev/null ;; *) printf '%s' "$v" ;; esac
+}
+# ioreg text -> JSON object of properties whose key matches lowercase ERE $1
+props_json() {
+  pj_body=$(kvlist | kvsel "$1" | {
+    pj_n=0; pj_seen=$NL
+    while IFS= read -r pj_l || [ -n "$pj_l" ]; do
+      [ "$pj_n" -lt "${2:-80}" ] || break
+      pj_k=${pj_l%%=*}; pj_v=${pj_l#*=}
+      case "$pj_seen" in *"$NL$pj_k$NL"*) continue ;; esac
+      pj_seen="$pj_seen$pj_k$NL"; pj_n=$((pj_n + 1))
+      [ "${#pj_v}" -gt 300 ] && pj_v="$(printf '%s\n' "$pj_v" | cut -c 1-300)..."
+      printf '%s\t%s\n' "$pj_k" "$pj_v"
+    done
+  } | esc | sed -e 's/^\([^'"$TAB"']*\)'"$TAB"'\(.*\)$/"\1":"\2"/' | joincomma)
+  printf '{%s}' "$pj_body"
+}
+# lines -> JSON array of strings (trimmed, de-duplicated, capped at $1 lines)
+lines_json() {
+  lj_body=$(clean | sed -e 's/^[ |]*//' | {
+    lj_n=0; lj_seen=$NL
+    while IFS= read -r lj_l || [ -n "$lj_l" ]; do
+      [ "$lj_n" -lt "${1:-60}" ] || break
+      [ -n "$lj_l" ] || continue
+      case "$lj_seen" in *"$NL$lj_l$NL"*) continue ;; esac
+      lj_seen="$lj_seen$lj_l$NL"; lj_n=$((lj_n + 1))
+      [ "${#lj_l}" -gt 300 ] && lj_l="$(printf '%s\n' "$lj_l" | cut -c 1-300)..."
+      printf '%s\n' "$lj_l"
+    done
+  } | esc | sed -e 's/^.*$/"&"/' | joincomma)
+  printf '[%s]' "$lj_body"
+}
+# ioreg node lines on stdin (from nodetree) -> JSON array of nodes whose "name <class X"
+# matches lowercase ERE $1.  "matched" = a driver attached to the node.
+nodes_json() {
+  nj_in=$(grep -e '+-o ' | clean | esc | sed -e 's/^[ |]*+-o //')
+  nj_body=""
+  if [ -n "$nj_in" ]; then
+    nj_n=$(printf '%s\n' "$nj_in" | sed -e 's/, id .*$//' | lower | grep -n -E -e "$1" | cut -d: -f1)
+    if [ -n "$nj_n" ]; then
+      nj_body=$(printf '%s\n' "$nj_in" | sed -n "$(printf '%s\n' "$nj_n" | sed -e 's/$/p/')" | {
+        nj_sep=""
+        while IFS= read -r nj_l || [ -n "$nj_l" ]; do
+          nj_key=${nj_l%%, id *}
+          nj_name=$nj_key
+          case "$nj_key" in *'<class'*)
+            nj_name=${nj_key%%<class*}
+            while :; do case "$nj_name" in *' ') nj_name=${nj_name% } ;; *) break ;; esac; done ;;
+          esac
+          nj_cls=${nj_key##*<class }
+          case "$nj_l" in *' matched'*|*',matched'*) nj_m=true ;; *) nj_m=false ;; esac
+          printf '%s{"name":"%s","class":"%s","matched":%s}' "$nj_sep" "$nj_name" "$nj_cls" "$nj_m"
+          nj_sep=,
+        done
+      })
+    fi
+  fi
+  printf '[%s]' "$nj_body"
+}
+ncount() { printf '%s\n' "$(( $(printf '%s' "$1" | grep -o '"name":' | wc -l) ))"; }
+nmatched() { printf '%s\n' "$(( $(printf '%s' "$1" | grep -o '"matched":true' | wc -l) ))"; }
+# names only, as a JSON array of strings
+nnames() { printf '[%s]' "$(printf '%s' "$1" | grep -o '"name":"[^"]*"' | sed -e 's/^"name"://' | joincomma)"; }
+add() { [ -n "$2" ] && J="$J,\"$1\":$2"; return 0; }
+note() { NOTES="${NOTES}${NOTES:+; }$1"; }
+# finish <ok:true|false> <verdict>  -- print the framed JSON object and exit
+finish() {
+  [ -n "$NOTES" ] && add note "$(jstr "$NOTES")"
+  printf '%s\n' '===HPDIAG_JSON_BEGIN==='
+  printf '{"tool":"%s","ok":%s,"verdict":"%s"%s}\n' "$TOOL" "$1" "$2" "$J"
+  printf '%s\n' '===HPDIAG_JSON_END==='
+  exit 0
+}
+# sed/grep/head/cut/wc do all the parsing; if one is missing every value would
+# come back silently empty, so report that instead (uses no helper that needs them).
+need_tools() {
+  for t in sed grep head cut wc; do
+    have "$t" || { J="$J,\"error\":\"required tool '$t' not found on this ramdisk\""; finish false info; }
+  done
+}
+need_ioreg() {
+  need_tools
+  have ioreg && return 0
+  add error "$(jstr 'ioreg not found on this ramdisk')"
+  finish false info
+}
+# ---- end shared helpers ------------------------------------------------------
+
+# SysCfg helpers.  The blob is the AppleDiagnosticDataSysCfg data property; ioreg
+# prints it as <hex>.  FourCC tags are stored byte-reversed ('SrNm' -> 'mNrS').
+# Byte values come from the shell's own printf ("'c" = character code), so no
+# external tool is involved and a missing one can never turn into an empty
+# (match-everything) pattern.
+hexof() {
+  h=""; hx_s=$1
+  while [ -n "$hx_s" ]; do
+    hx_r=${hx_s#?}; hx_c=${hx_s%"$hx_r"}
+    h="$h${h:+ }$(printf '%02x' "'$hx_c")"
+    hx_s=$hx_r
+  done
+  printf '%s' "$h"
+}
+# stdin lines -> one line, nothing in between (the hex runs of a data property)
+joinnone() { sed -e ':a' -e '$!N' -e 's/\n//' -e 'ta'; }
+rev4() { printf '%s' "$1" | sed -e 's/^\(.\)\(.\)\(.\)\(.\)$/\4\3\2\1/'; }
+# Sets SC_NODE (raw ioreg text) and SC_HEX ("aa bb cc ..." byte-spaced, so
+# pattern matches are always byte-aligned).
+syscfg_load() {
+  # Stock ramdisk: the ReadOnly kext.  DIAGS kernelcache boot: the writable
+  # AppleDiagnosticDataAccess kext takes its place, so try that second.
+  SC_CLASS=AppleDiagnosticDataAccessReadOnly
+  SC_NODE=$(ior -r -c AppleDiagnosticDataAccessReadOnly -l)
+  if [ -z "$SC_NODE" ]; then
+    SC_CLASS=AppleDiagnosticDataAccess
+    SC_NODE=$(ior -r -c AppleDiagnosticDataAccess -l)
+  fi
+  SC_HEX=$(printf '%s\n' "$SC_NODE" | grep -i 'syscfg' | grep -o '<[0-9a-fA-F]*>' | sed -e 's/[<>]//g' -e 'y/ABCDEF/abcdef/' | joinnone | sed -e 's/../& /g')
+  [ -n "$SC_HEX" ] || SC_HEX=$(printf '%s\n' "$SC_NODE" | grep -v '"AppleDiagnosticData" = ' | grep -o '<[0-9a-fA-F]*>' | sed -e 's/[<>]//g' -e 'y/ABCDEF/abcdef/' | joinnone | sed -e 's/../& /g')
+}
+sc_has() {
+  [ -n "$(hexof "$1")" ] || return 1
+  case "$SC_HEX" in *"$(hexof "$(rev4 "$1")")"*|*"$(hexof "$1")"*) return 0 ;; esac
+  return 1
+}
+# sc_data TAG N -> the N data bytes that follow the (reversed) tag, as plain hex
+sc_data() {
+  [ -n "$(hexof "$1")" ] || return 0
+  printf '%s\n' "$SC_HEX" | sed -n 's/^.*'"$(hexof "$(rev4 "$1")")"' \(\([0-9a-f][0-9a-f] \)\{'"$2"'\}\).*$/\1/p' | sed -e 's/ //g'
+}
+TOOL=factory
+need_ioreg
+
+# AppleDiagnosticDataAccessReadOnly publishes the whole SysCfg blob as the
+# AppleDiagnosticDataSysCfg data property (131072 bytes, signature 'gfCS').
+syscfg_load
+if [ -z "$SC_NODE" ]; then
+  note "neither AppleDiagnosticDataAccessReadOnly nor AppleDiagnosticDataAccess found - cannot read SysCfg"
+  finish false info
+fi
+
+# Expected identity tags: serial, Wi-Fi/BT/Ethernet MAC, model, region,
+# regulatory model, main logic board serial.  The MLB tag is MLB# - "MLBN"
+# never appears in real HomePod SysCfg data.
+# Calibration tags (all confirmed in a real A8 HomePod dump): speaker EQ/gain
+# (SpEQ, SpGa), woofer EQ (WFEQ), mic gain (MiGa), Wi-Fi / Bluetooth RF
+# calibration (WCAL, BCAL), LED calibration (LEDc, LSCI), model config (MdlC).
+present=""; missing=""; np=0
+chk() { # chk <label> <tag> [alt-tag]
+  if sc_has "$2" || { [ -n "$3" ] && sc_has "$3"; }; then
+    present="$present${present:+,}\"$1\""; np=$((np+1))
+  else
+    missing="$missing${missing:+,}\"$1\""
+  fi
+}
+for t in SrNm WMac BMac EMac 'Mod#' Regn 'RMd#' 'MLB#'; do chk "$t" "$t"; done
+nid=$np
+calmissing=""
+for t in SpEQ SpGa WFEQ MiGa WCAL BCAL LEDc LSCI MdlC; do
+  chk "$t" "$t"
+  sc_has "$t" || calmissing="$calmissing${calmissing:+,}\"$t\""
+done
+
+[ -n "$(hexof SrNm)" ] || note "neither hexdump nor od available - tag check unreliable"
+nbytes=$(( $(printf '%s' "$SC_HEX" | wc -c) / 3 ))
+sig=""; case "$SC_HEX" in "67 66 43 53"*) sig=gfCS ;; "53 43 66 67"*) sig=SCfg ;; esac
+add sysCfgSig "$(jstr "$sig")"
+add sysCfgBytes "$nbytes"
+add tagsPresent "[$present]"
+add tagsMissing "[$missing]"
+add tagsExpected 17
+add identityTagsPresent "$nid"
+add identityTagsExpected 8
+add calibrationTagsPresent "$((np - nid))"
+add calibrationTagsExpected 9
+add calibrationTagsMissing "[$calmissing]"
+
+# Provenance (bonus, never changes the verdict): the same node also publishes
+# "AppleDiagnosticData", an 8 KB blob with signature 'iPCB' - the factory
+# station log (test-station software versions and manufacturing date).  Its
+# presence shows the factory diagnostic area is still the original one.
+DD_HEX=$(printf '%s\n' "$SC_NODE" | grep '"AppleDiagnosticData" = <' | grep -o '<[0-9a-fA-F]*>' | head -1 | sed -e 's/[<>]//g' -e 'y/ABCDEF/abcdef/')
+if [ -n "$DD_HEX" ]; then
+  ddsig=""; case "$DD_HEX" in 69504342*) ddsig=iPCB ;; esac
+  ddbytes=$(( $(printf '%s' "$DD_HEX" | wc -c) / 2 ))
+  ddblank=false; [ -z "$(printf '%s\n' "$DD_HEX" | sed -e 's/[0f]//g')" ] && ddblank=true
+  add diagData "{\"present\":true,\"sig\":\"$ddsig\",\"bytes\":$ddbytes,\"blank\":$ddblank}"
+  if [ "$ddsig" = iPCB ]; then note "provenance: iPCB factory station log present ($ddbytes bytes)"
+  else note "AppleDiagnosticData present but without the iPCB signature"; fi
+else
+  add diagData '{"present":false}'
+  note "provenance: no AppleDiagnosticData (iPCB factory station log) found"
+fi
+
+# Best-effort serial: the 16 data bytes after the SrNm tag, if they look sane.
+ser=""
+for b in $(sc_data SrNm 16 | sed -e 's/../& /g'); do
+  [ "$b" = 00 ] && break
+  ser="$ser$(printf "\\$(printf '%03o' "0x$b")")"
+done
+case "$ser" in *[!A-Z0-9]*|'') ;; *) [ ${#ser} -ge 8 ] && add serial "$(jstr "$ser")" ;; esac
+
+# AppleEffaceableStorage: the locker region driver.  Locker contents need an
+# IOKit user client (not available from sh), so report its properties only.
+eff=$(ior -r -c AppleEffaceableStorage -l)
+add lockers "[]"
+if [ -n "$eff" ]; then
+  add effaceable "{\"present\":true,\"properties\":$(printf '%s\n' "$eff" | props_json '.')}"
+else
+  add effaceable '{"present":false}'
+  note "AppleEffaceableStorage node not found"
+fi
+note "locker enumeration needs an IOKit probe binary; lockers[] is empty by design"
+add raw "$(jraw "$(printf '%s\n' "$SC_NODE" | cut -c 1-400)")"
+add sysCfgHead "$(jstr "$(printf '%s' "$SC_HEX" | cut -c 1-191)")"
+
+if [ "$nbytes" -eq 0 ]; then
+  note "SysCfg node present but no data blob found"
+  finish false warn
+fi
+verdict=pass
+[ -n "$sig" ] || { verdict=warn; note "SysCfg signature not recognised"; }
+[ -z "$missing" ] || { verdict=warn; note "missing tags: $(printf '%s\n' "$missing" | sed -e 's/"//g')"; }
+# No serial, MLB or radio MAC = identity is incomplete, not just calibration.
+case ",$missing," in *'"SrNm"'*|*'"WMac"'*|*'"BMac"'*|*'"MLB#"'*) verdict=fail ;; esac
+finish true "$verdict"

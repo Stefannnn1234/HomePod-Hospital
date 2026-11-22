@@ -1,0 +1,148 @@
+#!/bin/sh
+# hpdiag-getlocker — READ-ONLY SysCfg write-path discovery for the HomePod SSH ramdisk
+# ============================================================================
+# Part of HomePod Restore's NAND-swap SysCfg feature. This script enumerates the
+# AppleEffaceableStorage stack with ioreg and reports what it finds as a JSON
+# object wrapped in sentinels, so the Mac-side transport can parse it out of
+# banner-/stderr-polluted SSH output.
+#
+# IT WRITES NOTHING. It only runs `ioreg` (and a couple of `command -v` / `test`
+# checks). There is ZERO brick risk in running it on any pod, including a repair
+# unit — it is the first, safe step of the write plan in SYSCFG_WRITE_FINDINGS.md.
+#
+# What it CANNOT do: a POSIX shell can't make IOKit external-method calls, so it
+# cannot actually invoke GetLocker (selector 5) to read a locker's bytes. It
+# answers the cheaper questions:
+#   • Is the AppleEffaceableStorage node present?
+#   • Is its user client (AppleEffaceableStorageUserClient) matchable/openable?
+#   • Is the fallback AppleNANDConfigAccess node present?
+#   • Is the arm64 helper `syscfg-probe` installed to do the real GetLocker?
+# The actual GetLocker/SetLocker round-trip is delegated to `syscfg-probe`
+# (spec in docs/writesink-architecture.md); this script tells the app whether
+# that helper is available and whether the kext it needs is there at all.
+#
+# Output contract (between the sentinels, a single-line JSON object):
+#   HPDIAG_GETLOCKER_BEGIN
+#   { ...json... }
+#   HPDIAG_GETLOCKER_END
+# The app keys on: effaceableStoragePresent, userClientMatchable,
+# nandConfigAccessPresent, syscfgProbeInstalled, diagsKextWritablePresent,
+# readOnlyKextPresent, diagsToolInstalled, notes[].
+# ----------------------------------------------------------------------------
+
+PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin:/usr/local/sbin
+export PATH
+
+# --- helpers ----------------------------------------------------------------
+
+# ioreg wrapper (same as every hpdiag-* script): -w 0 = no line truncation, and
+# the ANSI colour escapes this ramdisk's ioreg emits even into a pipe are
+# stripped.  ESC via printf: the ramdisk's BSD sed has no "\x1b".
+# NEVER run a bare "ioreg -l" (whole registry with properties) - it kernel-
+# panics the pod.  Only targeted "-r -c <Class>" queries are used here.
+ESC=$(printf '\033')
+ior() { ioreg -w 0 "$@" 2>/dev/null | sed -e "s/${ESC}\[[0-9;]*m//g"; }
+
+# ioreg class presence test: prints "1" if the class resolves to a node, else "0".
+has_class() {
+    # -r -c <class> restricts to that class (and its subclasses). No -l: a
+    # presence test needs no properties. Any "+-o" tree line means a node matched.
+    if ior -r -c "$1" | grep -q "+-o"; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+
+# Tool presence test: "1" if an executable of that name is on PATH.
+has_tool() {
+    if command -v "$1" >/dev/null 2>&1; then echo 1; else echo 0; fi
+}
+
+# JSON string escaper (backslash + double-quote). Keeps notes safe to embed.
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# --- probe ------------------------------------------------------------------
+
+EFFACEABLE=$(has_class AppleEffaceableStorage)
+# The user client class name varies slightly by build; try both the documented
+# name and the generic "UserClient" child under the storage node.
+UC_CLASS=$(has_class AppleEffaceableStorageUserClient)
+if [ "$UC_CLASS" = "0" ]; then
+    # Fall back: does the storage node advertise an IOUserClientClass property?
+    if ior -r -c AppleEffaceableStorage -l | grep -qi "IOUserClientClass"; then
+        UC_CLASS=1
+    fi
+fi
+NANDCFG=$(has_class AppleNANDConfigAccess)
+PROBE_TOOL=$(has_tool syscfg-probe)
+# DIAGS path. AppleNANDConfigAccess also matches on the stock ramdisk (it is the
+# provider of the ReadOnly kext), so it says nothing about writability. What
+# marks a DIAGS kernelcache boot is a node whose class is EXACTLY
+# AppleDiagnosticDataAccess (not ...ReadOnly), plus the writer the DIAGS ramdisk
+# carries at /diags/syscfg_write.
+DIAGS_KEXT=0
+if ior -r -c AppleDiagnosticDataAccess | grep -q "<class AppleDiagnosticDataAccess[,>]"; then DIAGS_KEXT=1; fi
+READONLY_KEXT=0
+if ior -r -c AppleDiagnosticDataAccessReadOnly | grep -q "<class AppleDiagnosticDataAccessReadOnly[,>]"; then READONLY_KEXT=1; fi
+DIAGS_TOOL=0
+if [ -x /diags/syscfg_write ]; then DIAGS_TOOL=1; fi
+
+# Notes: human hints the app surfaces in the diagnostics log.
+NOTES=""
+add_note() {
+    esc=$(json_escape "$1")
+    if [ -z "$NOTES" ]; then NOTES="\"$esc\""; else NOTES="$NOTES,\"$esc\""; fi
+}
+
+if [ "$EFFACEABLE" = "1" ]; then
+    add_note "AppleEffaceableStorage node present (primary SetLocker path reachable)."
+else
+    add_note "AppleEffaceableStorage node NOT found — primary locker path unavailable on this ramdisk."
+fi
+if [ "$UC_CLASS" = "1" ]; then
+    add_note "AppleEffaceableStorageUserClient appears matchable."
+else
+    add_note "No matchable AppleEffaceableStorageUserClient — the user client may be entitlement-gated or absent."
+fi
+if [ "$NANDCFG" = "1" ]; then
+    add_note "AppleNANDConfigAccess provider present (true on the stock ramdisk too - not by itself a write path)."
+fi
+if [ "$DIAGS_KEXT" = "1" ]; then
+    add_note "Writable AppleDiagnosticDataAccess kext present - this is a DIAGS kernelcache boot."
+elif [ "$READONLY_KEXT" = "1" ]; then
+    add_note "Only AppleDiagnosticDataAccessReadOnly present - stock ramdisk kernel, SysCfg is read-only here."
+fi
+if [ "$DIAGS_TOOL" = "1" ]; then
+    add_note "/diags/syscfg_write installed (DIAGS ramdisk writer)."
+elif [ "$DIAGS_KEXT" = "1" ]; then
+    add_note "DIAGS kext present but /diags/syscfg_write is missing - rebuild the DIAGS ramdisk with the tool."
+fi
+if [ "$PROBE_TOOL" = "1" ]; then
+    add_note "syscfg-probe installed — run it to perform the actual GetLocker read."
+else
+    add_note "syscfg-probe NOT installed in the overlay — install it to read lockers (this script can't call IOKit)."
+fi
+
+# Convert the 0/1 flags to JSON booleans.
+jbool() { if [ "$1" = "1" ]; then echo true; else echo false; fi; }
+
+# --- emit -------------------------------------------------------------------
+
+echo HPDIAG_GETLOCKER_BEGIN
+printf '{'
+printf '"schema":"hpdiag-getlocker/1",'
+printf '"effaceableStoragePresent":%s,' "$(jbool "$EFFACEABLE")"
+printf '"userClientMatchable":%s,' "$(jbool "$UC_CLASS")"
+printf '"nandConfigAccessPresent":%s,' "$(jbool "$NANDCFG")"
+printf '"syscfgProbeInstalled":%s,' "$(jbool "$PROBE_TOOL")"
+printf '"diagsKextWritablePresent":%s,' "$(jbool "$DIAGS_KEXT")"
+printf '"readOnlyKextPresent":%s,' "$(jbool "$READONLY_KEXT")"
+printf '"diagsToolInstalled":%s,' "$(jbool "$DIAGS_TOOL")"
+printf '"notes":[%s]' "$NOTES"
+printf '}\n'
+echo HPDIAG_GETLOCKER_END
+
+exit 0

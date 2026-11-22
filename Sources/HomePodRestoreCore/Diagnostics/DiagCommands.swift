@@ -18,7 +18,7 @@ import Foundation
 // kernel-panics the pod, and a ramdisk built back then still carries them.
 //
 // The diagnostic commands are read-only. The only writes are the script push,
-// and that touches nothing but the ramdisk's RAM-backed /tmp.
+// and that touches nothing but the ramdisk's RAM-backed /private/var/tmp.
 
 /// One pod-side script the app can push to the ramdisk: its bare file name
 /// (`hpdiag-nand`) and its bytes. Core never reads the app bundle — the app
@@ -67,13 +67,13 @@ public enum DiagCommands {
     public static let exitMarkerPrefix = "===HPDIAG_EXIT="
 
     /// Where the app pushes its scripts, first choice. RAM-backed, gone on reboot.
-    public static let pushDirectory = "/tmp/hpdiag"
+    /// The SSH ramdisk's root has NO /tmp (the 17.5 restore ramdisk carries
+    /// /private/var/tmp and /private/var/root only), so nothing here uses /tmp.
+    public static let pushDirectory = "/private/var/tmp/hpdiag"
 
     /// Every place the scripts may be pushed, in order of preference; the
     /// first one the pod lets us write to is used (`scriptCheck` reports it).
-    /// More than one because the ramdisk's root has no /tmp (only
-    /// /private/var/tmp), and creating /tmp fails when the root is read-only.
-    public static let pushDirectories = [pushDirectory, "/private/var/tmp/hpdiag", "/private/var/root/hpdiag"]
+    public static let pushDirectories = [pushDirectory, "/private/var/root/hpdiag"]
 
     /// What the ramdisk itself provides. Neither `ioreg` nor /usr/local/bin
     /// (where baked-in scripts live) is on dropbear's default PATH.
@@ -130,12 +130,13 @@ public enum DiagCommands {
     /// `hpdiag-*` scripts rely on that this ramdisk doesn't have.
     public static let lackMarkerPrefix = "HPDIAG_LACK "
 
-    /// External tools the `hpdiag-*` scripts call (see the overlay README,
-    /// "Assumptions about the ramdisk"). The Apple donor ramdisk plus the SSH
-    /// overlay does NOT necessarily carry all of them — `awk`, `tr` and `sort`
-    /// were absent from a ramdisk inspected on 2026-11-15 — so the check
-    /// reports what is missing instead of letting every tool fail obscurely.
-    public static let scriptRequiredTools = ["ioreg", "dd", "grep", "sed", "awk", "tr", "head", "cut", "sort", "wc"]
+    /// External tools the `hpdiag-*` scripts call unconditionally (see the
+    /// overlay README, "Assumptions about the ramdisk"). The ramdisk has no
+    /// `awk`, `tr`, `sort`, `od`, `strings` or `base64`, so the scripts use
+    /// none of them; every tool listed here is in the 17.5 SSH ramdisk (restore
+    /// ramdisk + SSHRD overlay). The check still reports any that is missing,
+    /// e.g. on a ramdisk built some other way.
+    public static let scriptRequiredTools = ["ioreg", "dd", "grep", "sed", "head", "cut", "wc", "hexdump", "expr"]
 
     // MARK: File transfer without a decoder
     //

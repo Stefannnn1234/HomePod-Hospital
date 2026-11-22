@@ -1,0 +1,451 @@
+#!/bin/sh
+# hpdiag-nand - NAND health (ASPStorage status/identity + block I/O error counters)
+# Runs on the HomePod SSH ramdisk (read-only probes only). Output: one JSON
+# object between ===HPDIAG_JSON_BEGIN=== / ===HPDIAG_JSON_END===.
+PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+
+# ---- shared helpers (duplicated in every hpdiag-* script on purpose, so each
+# ---- script stays standalone and can be copied/run on its own) --------------
+# Tools: the SSH ramdisk (audioOS 17.5 restore ramdisk + SSHRD overlay) has NO
+# awk, tr, sort, od, strings, base64 or timeout.  Everything below uses only
+# shell builtins (POSIX sh features - /bin/sh there is bash 3.2) plus sed, grep,
+# head, cut and wc, all of which the ramdisk carries.  Keep it that way.
+TAB=$(printf '\t')
+NL='
+'
+UC=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+LC=abcdefghijklmnopqrstuvwxyz
+J=""       # accumulated ,"key":value pairs for the output object
+NOTES=""   # human-readable notes, joined with "; "
+
+have() { command -v "$1" >/dev/null 2>&1; }
+# ioreg wrapper: -w 0 disables line truncation so long data blobs survive.
+# This ramdisk's ioreg colours its output with ANSI escapes even into a pipe
+# (every value arrives as ESC[0;31m99 ... ESC[0;0m), which breaks all numeric
+# and string matching, so they are stripped here.  ESC is produced with printf
+# because the ramdisk's BSD sed does not understand "\x1b" (a GNU extension).
+ESC=$(printf '\033')
+ior() { ioreg -w 0 "$@" 2>/dev/null | sed -e "s/${ESC}\[[0-9;]*m//g"; }
+# NEVER dump the whole registry with properties ("ioreg -l" / "ior -l"): on this
+# ramdisk that serialises every driver's properties and kernel-panics the pod.
+# Two targeted forms are allowed instead:
+#   nodetree CLASS...  names only.  "ioreg -r -c CLASS" WITHOUT -l prints just
+#                      the "+-o name <class ...>" lines of each matching subtree
+#                      and reads no property at all.  De-duplicated by entry id.
+#   ior -r [-d 1] -c CLASS -l   properties of one specific class (-d 1 = that
+#                      node only, not its children).
+nodetree() {
+  for c in "$@"; do ior -r -c "$c"; done | grep -e '+-o ' | {
+    nt_seen=$NL
+    while IFS= read -r nt_l || [ -n "$nt_l" ]; do
+      nt_k=${nt_l##*, id }; nt_k=${nt_k%%,*}
+      case "$nt_k" in
+        ''|*[!0-9A-Za-z_]*)
+          case "$nt_seen" in *"$NL$nt_k$NL"*) continue ;; esac
+          nt_seen="$nt_seen$nt_k$NL" ;;
+        *)
+          eval "nt_v=\${nt_id_$nt_k-}"
+          [ -n "$nt_v" ] && continue
+          eval "nt_id_$nt_k=1" ;;
+      esac
+      printf '%s\n' "$nt_l"
+    done
+  }
+}
+# Keep printable ASCII + newlines only, so output can never break JSON.
+# (LC_ALL=C, so the bracket range is plain bytes 0x20-0x7e.)
+clean() { sed -e "s/$TAB/ /g" -e 's/[^ -~]//g'; }
+esc() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+# stdin lines -> one line, joined with "," / with a literal \n
+joincomma() { sed -e ':a' -e '$!N' -e 's/\n/,/' -e 'ta'; }
+joinnl() { sed -e ':a' -e '$!N' -e 's/\n/\\n/' -e 'ta'; }
+# lowercase stdin (ASCII)
+lower() { sed -e "y/$UC/$LC/"; }
+# stdin -> one JSON string literal (newlines become \n)
+json_str() { printf '"%s"' "$(clean | esc | joinnl)"; }
+jstr() { printf '%s' "$1" | json_str; }
+# Raw text for the app's "show raw" view, capped so SSH output stays small.
+jraw() { printf '%s' "$1" | head -c "${HPDIAG_RAW_MAX:-6000}" | json_str; }
+# Number if plain decimal, quoted string otherwise, nothing if empty.
+jnum() {
+  case "$1" in
+    '') ;;
+    0) printf 0 ;;
+    0*|*[!0-9]*) jstr "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+# ioreg text -> key=value lines (tree art and string quotes stripped)
+kvlist() {
+  clean | sed -n 's/^[ |]*"\([^"]*\)" = \(.*\)$/\1=\2/p' | sed -e 's/="\([^"]*\)"$/=\1/'
+}
+# kvlist on stdin -> the lines whose lowercased key (text before the first "=")
+# matches the ERE $1, in input order.  The match runs on a key-only copy, so
+# "^...$" anchor to the key; grep -n maps the hits back to the full lines.
+kvsel() {
+  ks_kv=$(cat)
+  [ -n "$ks_kv" ] || return 0
+  ks_n=$(printf '%s\n' "$ks_kv" | sed -e 's/=.*$//' | lower | grep -n -E -e "$1" | cut -d: -f1)
+  [ -n "$ks_n" ] || return 0
+  printf '%s\n' "$ks_kv" | sed -n "$(printf '%s\n' "$ks_n" | sed -e 's/$/p/')"
+}
+# kvlist on stdin -> value of the first key matching lowercase ERE $1
+pick() { kvsel "$1" | head -n 1 | sed -e 's/^[^=]*=//'; }
+# like pick, but only accepts decimal / 0x-hex values; prints decimal
+picknum() {
+  v=$(grep -E -e '^[^=]*=(0x[0-9a-fA-F]+|[0-9]+)$' | pick "$1")
+  case "$v" in 0x*) printf '%d' "$v" 2>/dev/null ;; *) printf '%s' "$v" ;; esac
+}
+# ioreg text -> JSON object of properties whose key matches lowercase ERE $1
+props_json() {
+  pj_body=$(kvlist | kvsel "$1" | {
+    pj_n=0; pj_seen=$NL
+    while IFS= read -r pj_l || [ -n "$pj_l" ]; do
+      [ "$pj_n" -lt "${2:-80}" ] || break
+      pj_k=${pj_l%%=*}; pj_v=${pj_l#*=}
+      case "$pj_seen" in *"$NL$pj_k$NL"*) continue ;; esac
+      pj_seen="$pj_seen$pj_k$NL"; pj_n=$((pj_n + 1))
+      [ "${#pj_v}" -gt 300 ] && pj_v="$(printf '%s\n' "$pj_v" | cut -c 1-300)..."
+      printf '%s\t%s\n' "$pj_k" "$pj_v"
+    done
+  } | esc | sed -e 's/^\([^'"$TAB"']*\)'"$TAB"'\(.*\)$/"\1":"\2"/' | joincomma)
+  printf '{%s}' "$pj_body"
+}
+# lines -> JSON array of strings (trimmed, de-duplicated, capped at $1 lines)
+lines_json() {
+  lj_body=$(clean | sed -e 's/^[ |]*//' | {
+    lj_n=0; lj_seen=$NL
+    while IFS= read -r lj_l || [ -n "$lj_l" ]; do
+      [ "$lj_n" -lt "${1:-60}" ] || break
+      [ -n "$lj_l" ] || continue
+      case "$lj_seen" in *"$NL$lj_l$NL"*) continue ;; esac
+      lj_seen="$lj_seen$lj_l$NL"; lj_n=$((lj_n + 1))
+      [ "${#lj_l}" -gt 300 ] && lj_l="$(printf '%s\n' "$lj_l" | cut -c 1-300)..."
+      printf '%s\n' "$lj_l"
+    done
+  } | esc | sed -e 's/^.*$/"&"/' | joincomma)
+  printf '[%s]' "$lj_body"
+}
+# ioreg node lines on stdin (from nodetree) -> JSON array of nodes whose "name <class X"
+# matches lowercase ERE $1.  "matched" = a driver attached to the node.
+nodes_json() {
+  nj_in=$(grep -e '+-o ' | clean | esc | sed -e 's/^[ |]*+-o //')
+  nj_body=""
+  if [ -n "$nj_in" ]; then
+    nj_n=$(printf '%s\n' "$nj_in" | sed -e 's/, id .*$//' | lower | grep -n -E -e "$1" | cut -d: -f1)
+    if [ -n "$nj_n" ]; then
+      nj_body=$(printf '%s\n' "$nj_in" | sed -n "$(printf '%s\n' "$nj_n" | sed -e 's/$/p/')" | {
+        nj_sep=""
+        while IFS= read -r nj_l || [ -n "$nj_l" ]; do
+          nj_key=${nj_l%%, id *}
+          nj_name=$nj_key
+          case "$nj_key" in *'<class'*)
+            nj_name=${nj_key%%<class*}
+            while :; do case "$nj_name" in *' ') nj_name=${nj_name% } ;; *) break ;; esac; done ;;
+          esac
+          nj_cls=${nj_key##*<class }
+          case "$nj_l" in *' matched'*|*',matched'*) nj_m=true ;; *) nj_m=false ;; esac
+          printf '%s{"name":"%s","class":"%s","matched":%s}' "$nj_sep" "$nj_name" "$nj_cls" "$nj_m"
+          nj_sep=,
+        done
+      })
+    fi
+  fi
+  printf '[%s]' "$nj_body"
+}
+ncount() { printf '%s\n' "$(( $(printf '%s' "$1" | grep -o '"name":' | wc -l) ))"; }
+nmatched() { printf '%s\n' "$(( $(printf '%s' "$1" | grep -o '"matched":true' | wc -l) ))"; }
+# names only, as a JSON array of strings
+nnames() { printf '[%s]' "$(printf '%s' "$1" | grep -o '"name":"[^"]*"' | sed -e 's/^"name"://' | joincomma)"; }
+add() { [ -n "$2" ] && J="$J,\"$1\":$2"; return 0; }
+note() { NOTES="${NOTES}${NOTES:+; }$1"; }
+# finish <ok:true|false> <verdict>  -- print the framed JSON object and exit
+finish() {
+  [ -n "$NOTES" ] && add note "$(jstr "$NOTES")"
+  printf '%s\n' '===HPDIAG_JSON_BEGIN==='
+  printf '{"tool":"%s","ok":%s,"verdict":"%s"%s}\n' "$TOOL" "$1" "$2" "$J"
+  printf '%s\n' '===HPDIAG_JSON_END==='
+  exit 0
+}
+# sed/grep/head/cut/wc do all the parsing; if one is missing every value would
+# come back silently empty, so report that instead (uses no helper that needs them).
+need_tools() {
+  for t in sed grep head cut wc; do
+    have "$t" || { J="$J,\"error\":\"required tool '$t' not found on this ramdisk\""; finish false info; }
+  done
+}
+need_ioreg() {
+  need_tools
+  have ioreg && return 0
+  add error "$(jstr 'ioreg not found on this ramdisk')"
+  finish false info
+}
+# ---- end shared helpers ------------------------------------------------------
+
+TOOL=nand
+need_ioreg
+
+# Property names below are confirmed against a real A8 HomePod registry dump
+# (audioOS 17 ramdisk, Toshiba 15nm MLC).  This ASP publishes NO wear / spare /
+# bad-block / erase-count / uncorrectable counters in the IORegistry, so health
+# is judged from what does exist:
+#   ASPStorage."AppleNANDStatus"            = "Ready"
+#   ASPStorage."Device Characteristics"     = {"nand-marketing-name"=..,"capacity"=..,...}
+#   ASPStorage."Controller Characteristics" = {"Encryption Type"="AES-CBC"}
+#   IOBlockStorageDriver."Statistics"       = {"Errors (Read)"=0,"Retries (Read)"=0,...}
+# Nested dicts are printed compact, with no spaces around "=".
+
+# dval KEY: compact dict text on stdin -> value of exactly KEY (string quotes removed)
+# (the closing-bracket set is kept in a variable: a literal "}" inside
+# ${v%%...} would end the expansion early in some shells)
+DV_END='[,})]*'
+dval() {
+  dv_pat="\"$1\"="
+  while IFS= read -r dv_l || [ -n "$dv_l" ]; do
+    case "$dv_l" in *"$dv_pat"*) ;; *) continue ;; esac
+    dv_v=${dv_l#*"$dv_pat"}
+    case "$dv_v" in
+      \"*) dv_v=${dv_v#?}
+           case "$dv_v" in *\"*) dv_v=${dv_v%%\"*} ;; *) dv_v="" ;; esac ;;
+      *) dv_v=${dv_v%%$DV_END} ;;
+    esac
+    printf '%s\n' "$dv_v"
+    return 0
+  done
+  return 0
+}
+# ioreg -r subtree on stdin -> only the first node (its own properties)
+own() {
+  ow_t=$(cat)
+  [ -n "$ow_t" ] || return 0
+  ow_n=$(printf '%s\n' "$ow_t" | grep -n -e '+-o ' | sed -n -e '2s/:.*$//p')
+  if [ -n "$ow_n" ]; then printf '%s\n' "$ow_t" | head -n "$((ow_n - 1))"
+  else printf '%s\n' "$ow_t"; fi
+}
+# "ioreg -r -c IOBlockStorageDriver -l" on stdin -> one line per disk:
+#   bsd|media name|errRead|errWrite|retryRead|retryWrite|opsRead|opsWrite|bytesRead|bytesWrite
+# The Statistics dict sits on the driver node; the BSD name on its IOMedia child.
+# dv TEXT KEY -> value of "KEY"= in compact dict TEXT, cut at the first , } or )
+dv() {
+  dv_pat="\"$2\"="
+  case "$1" in *"$dv_pat"*) dv_v=${1#*"$dv_pat"}; printf '%s' "${dv_v%%$DV_END}" ;; esac
+}
+blkstats() {
+  bk_want=0; bk_st=""; bk_media=""; bk_seen=$NL
+  while IFS= read -r bk_l || [ -n "$bk_l" ]; do
+    case "$bk_l" in
+      *'+-o '*)
+        case "$bk_l" in
+          *'<class IOBlockStorageDriver,'*|*'<class IOBlockStorageDriver>'*)
+            bk_st=""; bk_media=""; bk_want=1 ;;
+          *'<class IOMedia,'*|*'<class IOMedia>'*)
+            if [ "$bk_want" = 1 ] && [ -z "$bk_media" ]; then
+              bk_media=${bk_l##*'+-o '}; bk_media=${bk_media%%<class*}
+              while :; do case "$bk_media" in *' ') bk_media=${bk_media% } ;; *) break ;; esac; done
+            fi ;;
+        esac
+        continue ;;
+    esac
+    if [ "$bk_want" = 1 ] && [ -z "$bk_media" ]; then
+      case "$bk_l" in *'"Statistics" = '*) bk_st=$bk_l ;; esac
+    fi
+    if [ "$bk_want" = 1 ] && [ -n "$bk_media" ]; then
+      case "$bk_l" in
+        *'"BSD Name" = "'*)
+          bk_b=${bk_l##*'"BSD Name" = "'}; bk_b=${bk_b%%\"*}; bk_want=0
+          case "$bk_seen" in *"$NL$bk_b$NL"*) continue ;; esac
+          bk_seen="$bk_seen$bk_b$NL"
+          printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$bk_b" "$bk_media" \
+            "$(dv "$bk_st" 'Errors (Read)')" "$(dv "$bk_st" 'Errors (Write)')" \
+            "$(dv "$bk_st" 'Retries (Read)')" "$(dv "$bk_st" 'Retries (Write)')" \
+            "$(dv "$bk_st" 'Operations (Read)')" "$(dv "$bk_st" 'Operations (Write)')" \
+            "$(dv "$bk_st" 'Bytes (Read)')" "$(dv "$bk_st" 'Bytes (Write)')" ;;
+      esac
+    fi
+  done
+}
+# first line of the blkstats list (stdin) whose media name contains "nand media"
+# (any case) / whose BSD name is exactly $1
+bs_nand() {
+  while IFS= read -r bn_l || [ -n "$bn_l" ]; do
+    case "$bn_l" in *'|'*) bn_f=${bn_l#*|}; bn_f=${bn_f%%|*} ;; *) bn_f="" ;; esac
+    case "$bn_f" in *[Nn][Aa][Nn][Dd]' '[Mm][Ee][Dd][Ii][Aa]*) printf '%s\n' "$bn_l"; return 0 ;; esac
+  done
+  return 0
+}
+bs_bsd() {
+  while IFS= read -r bn_l || [ -n "$bn_l" ]; do
+    [ "${bn_l%%|*}" = "$1" ] && { printf '%s\n' "$bn_l"; return 0; }
+  done
+  return 0
+}
+num() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+# add a string key only when the value is known
+adds() { [ -n "$2" ] && add "$1" "$(jstr "$2")"; return 0; }
+
+ASP=$(ior -r -c ASPStorage -l | clean | own)
+KV=$(printf '%s\n' "$ASP" | kvlist)
+status=$(printf '%s\n' "$KV" | pick '^applenandstatus$')
+DC=$(printf '%s\n' "$KV" | pick '^device characteristics$')
+CC=$(printf '%s\n' "$KV" | pick '^controller characteristics$')
+dc() { printf '%s\n' "$DC" | dval "$1"; }
+
+cap=$(dc capacity); caus=$(dc caus); bpc=$(dc blocks-per-cau)
+vendor=$(dc vendor-name); [ -n "$vendor" ] || vendor=$(dc vendor)
+blocks=""; num "$caus" && num "$bpc" && blocks=$((caus * bpc))
+enc=$(printf '%s\n' "$CC" | dval 'Encryption Type')
+
+[ -n "$ASP" ] && add source '"ASPStorage"'
+adds nandStatus "$status"
+adds encryptionType "$enc"
+adds nandMarketingName "$(dc nand-marketing-name)"
+adds vendor "$vendor"
+adds chipId "$(dc chip-id)"
+adds manufacturerId "$(dc manufacturer-id)"
+adds firmwareVersion "$(dc firmware-version)"
+# What the factory NAND tools print (NANDInfoTool / nandcsid / nanduid in DIAGS,
+# NANDInfoTool on the internal rootfs), as far as the ASP publishes it here:
+#   controller-unique-id  the NAND's own unique ID (what "nanduid" reports).
+#                         It is a property of the chip, so it changes when the
+#                         NAND is replaced - record it at intake to tell later
+#                         whether a board still has the chip it came in with.
+#   chip-id               PPN device ID; ASCII "PPN" (50 50 4E) + version bytes
+#   manufacturer-id       raw ID bytes; byte 0 is the JEDEC maker code
+#                         (98 Toshiba/Kioxia, 2C Micron, AD SK hynix, EC Samsung,
+#                         45 SanDisk) and should agree with vendor-name
+#   firmware-version      PPN controller firmware (emitted above)
+#   num-bus / ce-per-bus / dies-per-channel   how many chip enables answered
+# Per-CE chip IDs, the PPN feature list and the grown-bad-block table need the
+# NANDInfoTool user client and are not available from sh.
+uid=$(dc controller-unique-id)
+adds controllerUniqueId "$uid"
+chipid=$(dc chip-id)
+case "$chipid" in
+  50504[eE]??????*)
+    add ppn true
+    ppnv=$(printf '%s' "$chipid" | cut -c 7-12 | sed -e 's/^\(..\)\(..\)\(..\)$/\1 \2 \3/')
+    # shellcheck disable=SC2086
+    set -- $ppnv
+    [ $# -eq 3 ] && adds ppnVersion "$(printf '%d.%d.%d' "0x$1" "0x$2" "0x$3" 2>/dev/null)" ;;
+  ?*) add ppn false ;;
+esac
+mfr=$(dc manufacturer-id)
+jedec=""
+case "$mfr" in
+  98*) jedec="Toshiba/Kioxia" ;; 2[cC]*) jedec="Micron" ;; [aA][dD]*) jedec="SK hynix" ;;
+  [eE][cC]*) jedec="Samsung" ;; 45*) jedec="SanDisk" ;; 89*) jedec="Intel" ;;
+esac
+adds jedecVendor "$jedec"
+nbus=$(dc num-bus); ceb=$(dc ce-per-bus); dpc=$(dc dies-per-channel)
+add numBus "$(jnum "$nbus")"
+add cePerBus "$(jnum "$ceb")"
+add diesPerChannel "$(jnum "$dpc")"
+num "$nbus" && num "$ceb" && add chipEnables "$((nbus * ceb))"
+add capacityBytes "$(jnum "$cap")"
+add caus "$(jnum "$caus")"
+add blocksPerCau "$(jnum "$bpc")"
+add blocksTotal "$(jnum "$blocks")"
+add packageBlocksAtEOL "$(jnum "$(dc package_blocks_at_EOL)")"
+add pagesPerBlockMlc "$(jnum "$(dc pages-per-block-mlc)")"
+add pagesPerBlockSlc "$(jnum "$(dc pages-per-block-slc)")"
+add bitsPerCell "$(jnum "$(dc default-bits-per-cell)")"
+add pageBytes "$(jnum "$(dc '#page-bytes')")"
+
+# Block-layer I/O statistics for every whole disk (NAND, Firmware, LLB, PanicLog).
+# Device numbers are NOT stable between pods, so the main NAND is found by its
+# IOMedia name ("Apple NAND Media"), with disk0 only as a fallback.
+BS=$(ior -r -c IOBlockStorageDriver -l | clean | blkstats)
+disks=""; main=""; other_err=""
+if [ -n "$BS" ]; then
+  main=$(printf '%s\n' "$BS" | bs_nand)
+  [ -n "$main" ] || main=$(printf '%s\n' "$BS" | bs_bsd disk0)
+  OLDIFS=$IFS; IFS='
+'
+  for l in $BS; do
+    IFS='|'; set -- $l; IFS='
+'
+    o="{\"bsd\":$(jstr "$1"),\"media\":$(jstr "$2")"
+    [ -n "$3" ] && o="$o,\"errorsRead\":$(jnum "$3")"
+    [ -n "$4" ] && o="$o,\"errorsWrite\":$(jnum "$4")"
+    [ -n "$5" ] && o="$o,\"retriesRead\":$(jnum "$5")"
+    [ -n "$6" ] && o="$o,\"retriesWrite\":$(jnum "$6")"
+    [ -n "$7" ] && o="$o,\"opsRead\":$(jnum "$7")"
+    [ -n "$8" ] && o="$o,\"opsWrite\":$(jnum "$8")"
+    [ -n "$9" ] && o="$o,\"bytesRead\":$(jnum "$9")"
+    [ -n "${10}" ] && o="$o,\"bytesWrite\":$(jnum "${10}")"
+    disks="$disks${disks:+,}$o}"
+    if [ "$l" != "$main" ]; then
+      e=0; num "$3" && e=$((e + $3)); num "$4" && e=$((e + $4))
+      [ "$e" -gt 0 ] && other_err="$other_err${other_err:+, }$1 ($2) $e"
+    fi
+  done
+  IFS=$OLDIFS
+fi
+add disks "[$disks]"
+
+m_bsd=""; m_er=""; m_ew=""; m_rr=""; m_rw=""
+if [ -n "$main" ]; then
+  OLDIFS=$IFS; IFS='|'; set -- $main; IFS=$OLDIFS
+  m_bsd=$1; m_er=$3; m_ew=$4; m_rr=$5; m_rw=$6
+fi
+adds mainDisk "$m_bsd"
+add ioErrorsRead "$(jnum "$m_er")"
+add ioErrorsWrite "$(jnum "$m_ew")"
+add ioRetriesRead "$(jnum "$m_rr")"
+add ioRetriesWrite "$(jnum "$m_rw")"
+# Legacy key the app already displays ("Read Retries").
+add readRetrySeen "$(jnum "$m_rr")"
+
+# Root on md0 means ASP forces storage read-only ("Ramdisk rooted").
+rooted=""
+m=$(mount 2>/dev/null | grep ' on / ')
+case "$m" in /dev/md*) rooted=true ;; /dev/*) rooted=false ;; esac
+add ramdiskRooted "$rooted"
+[ "$rooted" = true ] && { add writeLocked true; note "writeLocked inferred from md0 root"; }
+
+add raw "$(jraw "$ASP
+## IOBlockStorageDriver (bsd|media|errR|errW|retryR|retryW|opsR|opsW|bytesR|bytesW)
+$BS")"
+
+if [ -z "$ASP" ]; then
+  if ls /dev/disk0 /dev/rdisk0 >/dev/null 2>&1; then
+    note "ASPStorage node not found in the IORegistry (class name may differ on this build)"
+    finish false info
+  fi
+  note "no ASPStorage node and no /dev/disk0 - NAND controller not enumerating"
+  finish false fail
+fi
+
+# Verdict: fail = AppleNANDStatus is not "Ready", or the main NAND disk has
+# read/write errors.  warn = main NAND disk needed retries (or the status
+# property is missing altogether).  pass otherwise.  Errors on the other
+# regions (e.g. the PanicLog stack) are reported in the note only.
+verdict=pass
+errs=0; num "$m_er" && errs=$((errs + m_er)); num "$m_ew" && errs=$((errs + m_ew))
+rets=0; num "$m_rr" && rets=$((rets + m_rr)); num "$m_rw" && rets=$((rets + m_rw))
+if [ "$rets" -gt 0 ]; then verdict=warn; note "$m_bsd I/O retries: read ${m_rr:-0}, write ${m_rw:-0}"; fi
+if [ -z "$status" ]; then
+  verdict=warn; note "AppleNANDStatus property not found on ASPStorage"
+elif [ "$status" != Ready ]; then
+  verdict=fail; note "AppleNANDStatus is '$status' (expected Ready)"
+fi
+if [ "$errs" -gt 0 ]; then verdict=fail; note "$m_bsd I/O errors: read ${m_er:-0}, write ${m_ew:-0}"; fi
+[ -n "$main" ] || note "no I/O statistics found for the main NAND disk - verdict is from AppleNANDStatus only"
+# Identity sanity (note only, never the verdict): the JEDEC maker byte and the
+# vendor string describe the same chip, so they should name the same maker.
+if [ -n "$jedec" ] && [ -n "$vendor" ]; then
+  case "$(printf '%s\n' "$jedec" | lower)" in
+    *"$(printf '%s\n' "$vendor" | lower | cut -c 1-5)"*) ;;
+    *) note "manufacturer-id says $jedec but vendor-name says $vendor" ;;
+  esac
+fi
+case "$uid" in
+  '') ;;
+  *[!0]*) ;;
+  *) note "controller-unique-id is all zero" ;;
+esac
+[ -n "$other_err" ] && note "I/O errors on other regions (not counted): $other_err"
+finish true "$verdict"

@@ -8,6 +8,15 @@ xcuserdata/
 # SSH ramdisk overlay: third-party binaries, assembled locally (see folder README)
 scripts/ssh-ramdisk-overlay/*
 !scripts/ssh-ramdisk-overlay/README.md
+# ...but our own diagnostic scripts in it ARE tracked (the app pushes them to the pod).
+# Each folder level has to be re-included before the files inside it can be.
+!scripts/ssh-ramdisk-overlay/usr/
+scripts/ssh-ramdisk-overlay/usr/*
+!scripts/ssh-ramdisk-overlay/usr/local/
+scripts/ssh-ramdisk-overlay/usr/local/*
+!scripts/ssh-ramdisk-overlay/usr/local/bin/
+scripts/ssh-ramdisk-overlay/usr/local/bin/*
+!scripts/ssh-ramdisk-overlay/usr/local/bin/hpdiag-*
 
 # Generic A8 APTicket (vendored from SSHRD_Script for checkm8 boot)
 scripts/apticket-0x7000.shsh
@@ -38,3 +47,6 @@ screenlog.0
 # Python bytecode caches (e.g. nicotine/tools/asahi_firmware/__pycache__)
 __pycache__/
 *.pyc
+
+# Kernel/m1n1 build tree made by nicotine/kernel/build.sh
+nicotine/kernel/work/

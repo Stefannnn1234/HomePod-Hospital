@@ -1,0 +1,377 @@
+#!/bin/sh
+# hpdiag-partmap - partition and boot-chain integrity
+# Runs on the HomePod SSH ramdisk (read-only probes only). Output: one JSON
+# object between ===HPDIAG_JSON_BEGIN=== / ===HPDIAG_JSON_END===.
+PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+
+# ---- shared helpers (duplicated in every hpdiag-* script on purpose, so each
+# ---- script stays standalone and can be copied/run on its own) --------------
+# Tools: the SSH ramdisk (audioOS 17.5 restore ramdisk + SSHRD overlay) has NO
+# awk, tr, sort, od, strings, base64 or timeout.  Everything below uses only
+# shell builtins (POSIX sh features - /bin/sh there is bash 3.2) plus sed, grep,
+# head, cut and wc, all of which the ramdisk carries.  Keep it that way.
+TAB=$(printf '\t')
+NL='
+'
+UC=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+LC=abcdefghijklmnopqrstuvwxyz
+J=""       # accumulated ,"key":value pairs for the output object
+NOTES=""   # human-readable notes, joined with "; "
+
+have() { command -v "$1" >/dev/null 2>&1; }
+# ioreg wrapper: -w 0 disables line truncation so long data blobs survive.
+# This ramdisk's ioreg colours its output with ANSI escapes even into a pipe
+# (every value arrives as ESC[0;31m99 ... ESC[0;0m), which breaks all numeric
+# and string matching, so they are stripped here.  ESC is produced with printf
+# because the ramdisk's BSD sed does not understand "\x1b" (a GNU extension).
+ESC=$(printf '\033')
+ior() { ioreg -w 0 "$@" 2>/dev/null | sed -e "s/${ESC}\[[0-9;]*m//g"; }
+# NEVER dump the whole registry with properties ("ioreg -l" / "ior -l"): on this
+# ramdisk that serialises every driver's properties and kernel-panics the pod.
+# Two targeted forms are allowed instead:
+#   nodetree CLASS...  names only.  "ioreg -r -c CLASS" WITHOUT -l prints just
+#                      the "+-o name <class ...>" lines of each matching subtree
+#                      and reads no property at all.  De-duplicated by entry id.
+#   ior -r [-d 1] -c CLASS -l   properties of one specific class (-d 1 = that
+#                      node only, not its children).
+nodetree() {
+  for c in "$@"; do ior -r -c "$c"; done | grep -e '+-o ' | {
+    nt_seen=$NL
+    while IFS= read -r nt_l || [ -n "$nt_l" ]; do
+      nt_k=${nt_l##*, id }; nt_k=${nt_k%%,*}
+      case "$nt_k" in
+        ''|*[!0-9A-Za-z_]*)
+          case "$nt_seen" in *"$NL$nt_k$NL"*) continue ;; esac
+          nt_seen="$nt_seen$nt_k$NL" ;;
+        *)
+          eval "nt_v=\${nt_id_$nt_k-}"
+          [ -n "$nt_v" ] && continue
+          eval "nt_id_$nt_k=1" ;;
+      esac
+      printf '%s\n' "$nt_l"
+    done
+  }
+}
+# Keep printable ASCII + newlines only, so output can never break JSON.
+# (LC_ALL=C, so the bracket range is plain bytes 0x20-0x7e.)
+clean() { sed -e "s/$TAB/ /g" -e 's/[^ -~]//g'; }
+esc() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+# stdin lines -> one line, joined with "," / with a literal \n
+joincomma() { sed -e ':a' -e '$!N' -e 's/\n/,/' -e 'ta'; }
+joinnl() { sed -e ':a' -e '$!N' -e 's/\n/\\n/' -e 'ta'; }
+# lowercase stdin (ASCII)
+lower() { sed -e "y/$UC/$LC/"; }
+# stdin -> one JSON string literal (newlines become \n)
+json_str() { printf '"%s"' "$(clean | esc | joinnl)"; }
+jstr() { printf '%s' "$1" | json_str; }
+# Raw text for the app's "show raw" view, capped so SSH output stays small.
+jraw() { printf '%s' "$1" | head -c "${HPDIAG_RAW_MAX:-6000}" | json_str; }
+# Number if plain decimal, quoted string otherwise, nothing if empty.
+jnum() {
+  case "$1" in
+    '') ;;
+    0) printf 0 ;;
+    0*|*[!0-9]*) jstr "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+# ioreg text -> key=value lines (tree art and string quotes stripped)
+kvlist() {
+  clean | sed -n 's/^[ |]*"\([^"]*\)" = \(.*\)$/\1=\2/p' | sed -e 's/="\([^"]*\)"$/=\1/'
+}
+# kvlist on stdin -> the lines whose lowercased key (text before the first "=")
+# matches the ERE $1, in input order.  The match runs on a key-only copy, so
+# "^...$" anchor to the key; grep -n maps the hits back to the full lines.
+kvsel() {
+  ks_kv=$(cat)
+  [ -n "$ks_kv" ] || return 0
+  ks_n=$(printf '%s\n' "$ks_kv" | sed -e 's/=.*$//' | lower | grep -n -E -e "$1" | cut -d: -f1)
+  [ -n "$ks_n" ] || return 0
+  printf '%s\n' "$ks_kv" | sed -n "$(printf '%s\n' "$ks_n" | sed -e 's/$/p/')"
+}
+# kvlist on stdin -> value of the first key matching lowercase ERE $1
+pick() { kvsel "$1" | head -n 1 | sed -e 's/^[^=]*=//'; }
+# like pick, but only accepts decimal / 0x-hex values; prints decimal
+picknum() {
+  v=$(grep -E -e '^[^=]*=(0x[0-9a-fA-F]+|[0-9]+)$' | pick "$1")
+  case "$v" in 0x*) printf '%d' "$v" 2>/dev/null ;; *) printf '%s' "$v" ;; esac
+}
+# ioreg text -> JSON object of properties whose key matches lowercase ERE $1
+props_json() {
+  pj_body=$(kvlist | kvsel "$1" | {
+    pj_n=0; pj_seen=$NL
+    while IFS= read -r pj_l || [ -n "$pj_l" ]; do
+      [ "$pj_n" -lt "${2:-80}" ] || break
+      pj_k=${pj_l%%=*}; pj_v=${pj_l#*=}
+      case "$pj_seen" in *"$NL$pj_k$NL"*) continue ;; esac
+      pj_seen="$pj_seen$pj_k$NL"; pj_n=$((pj_n + 1))
+      [ "${#pj_v}" -gt 300 ] && pj_v="$(printf '%s\n' "$pj_v" | cut -c 1-300)..."
+      printf '%s\t%s\n' "$pj_k" "$pj_v"
+    done
+  } | esc | sed -e 's/^\([^'"$TAB"']*\)'"$TAB"'\(.*\)$/"\1":"\2"/' | joincomma)
+  printf '{%s}' "$pj_body"
+}
+# lines -> JSON array of strings (trimmed, de-duplicated, capped at $1 lines)
+lines_json() {
+  lj_body=$(clean | sed -e 's/^[ |]*//' | {
+    lj_n=0; lj_seen=$NL
+    while IFS= read -r lj_l || [ -n "$lj_l" ]; do
+      [ "$lj_n" -lt "${1:-60}" ] || break
+      [ -n "$lj_l" ] || continue
+      case "$lj_seen" in *"$NL$lj_l$NL"*) continue ;; esac
+      lj_seen="$lj_seen$lj_l$NL"; lj_n=$((lj_n + 1))
+      [ "${#lj_l}" -gt 300 ] && lj_l="$(printf '%s\n' "$lj_l" | cut -c 1-300)..."
+      printf '%s\n' "$lj_l"
+    done
+  } | esc | sed -e 's/^.*$/"&"/' | joincomma)
+  printf '[%s]' "$lj_body"
+}
+# ioreg node lines on stdin (from nodetree) -> JSON array of nodes whose "name <class X"
+# matches lowercase ERE $1.  "matched" = a driver attached to the node.
+nodes_json() {
+  nj_in=$(grep -e '+-o ' | clean | esc | sed -e 's/^[ |]*+-o //')
+  nj_body=""
+  if [ -n "$nj_in" ]; then
+    nj_n=$(printf '%s\n' "$nj_in" | sed -e 's/, id .*$//' | lower | grep -n -E -e "$1" | cut -d: -f1)
+    if [ -n "$nj_n" ]; then
+      nj_body=$(printf '%s\n' "$nj_in" | sed -n "$(printf '%s\n' "$nj_n" | sed -e 's/$/p/')" | {
+        nj_sep=""
+        while IFS= read -r nj_l || [ -n "$nj_l" ]; do
+          nj_key=${nj_l%%, id *}
+          nj_name=$nj_key
+          case "$nj_key" in *'<class'*)
+            nj_name=${nj_key%%<class*}
+            while :; do case "$nj_name" in *' ') nj_name=${nj_name% } ;; *) break ;; esac; done ;;
+          esac
+          nj_cls=${nj_key##*<class }
+          case "$nj_l" in *' matched'*|*',matched'*) nj_m=true ;; *) nj_m=false ;; esac
+          printf '%s{"name":"%s","class":"%s","matched":%s}' "$nj_sep" "$nj_name" "$nj_cls" "$nj_m"
+          nj_sep=,
+        done
+      })
+    fi
+  fi
+  printf '[%s]' "$nj_body"
+}
+ncount() { printf '%s\n' "$(( $(printf '%s' "$1" | grep -o '"name":' | wc -l) ))"; }
+nmatched() { printf '%s\n' "$(( $(printf '%s' "$1" | grep -o '"matched":true' | wc -l) ))"; }
+# names only, as a JSON array of strings
+nnames() { printf '[%s]' "$(printf '%s' "$1" | grep -o '"name":"[^"]*"' | sed -e 's/^"name"://' | joincomma)"; }
+add() { [ -n "$2" ] && J="$J,\"$1\":$2"; return 0; }
+note() { NOTES="${NOTES}${NOTES:+; }$1"; }
+# finish <ok:true|false> <verdict>  -- print the framed JSON object and exit
+finish() {
+  [ -n "$NOTES" ] && add note "$(jstr "$NOTES")"
+  printf '%s\n' '===HPDIAG_JSON_BEGIN==='
+  printf '{"tool":"%s","ok":%s,"verdict":"%s"%s}\n' "$TOOL" "$1" "$2" "$J"
+  printf '%s\n' '===HPDIAG_JSON_END==='
+  exit 0
+}
+# sed/grep/head/cut/wc do all the parsing; if one is missing every value would
+# come back silently empty, so report that instead (uses no helper that needs them).
+need_tools() {
+  for t in sed grep head cut wc; do
+    have "$t" || { J="$J,\"error\":\"required tool '$t' not found on this ramdisk\""; finish false info; }
+  done
+}
+need_ioreg() {
+  need_tools
+  have ioreg && return 0
+  add error "$(jstr 'ioreg not found on this ramdisk')"
+  finish false info
+}
+# ---- end shared helpers ------------------------------------------------------
+
+TOOL=partmap
+need_tools
+FW_MB=${HPDIAG_FW_SCAN_MB:-4}      # how much of the firmware region to scan
+tmo() { if have timeout; then timeout "${HPDIAG_DD_TIMEOUT:-20}" "$@"; else "$@"; fi; }
+# This NAND returns nothing for 512-byte reads, so always read 1 MiB blocks.
+# (bs=1048576 instead of bs=1m: works with both BSD and GNU dd.)
+rd() { tmo dd if="$1" bs=1048576 count="${2:-1}" 2>/dev/null; }
+# sortu: sort -u for a short list (C byte order, via expr's string compare);
+# the ramdisk has no sort(1).  Empty lines are dropped.
+sortu() {
+  su_out=""
+  while IFS= read -r su_l || [ -n "$su_l" ]; do
+    [ -n "$su_l" ] || continue
+    case "$NL$su_out$NL" in *"$NL$su_l$NL"*) continue ;; esac
+    su_new=""; su_put=0
+    su_ifs=$IFS; IFS=$NL; set -f
+    for su_x in $su_out; do
+      if [ "$su_put" = 0 ] && [ "$(expr "x$su_l" \< "x$su_x")" = 1 ]; then su_new="$su_new$su_l$NL"; su_put=1; fi
+      su_new="$su_new$su_x$NL"
+    done
+    set +f; IFS=$su_ifs
+    [ "$su_put" = 1 ] || su_new="$su_new$su_l$NL"
+    su_out=${su_new%"$NL"}
+  done
+  [ -z "$su_out" ] || printf '%s\n' "$su_out"
+}
+
+# Device numbers are NOT fixed: on a real pod disk2 = Firmware, disk3 = LLB and
+# disk4 = PanicLog (not disk3 as first assumed), and other units may differ.
+# So each region is identified by its IOMedia node name ("Apple NAND Media",
+# "Apple Firmware Media", "Apple LLB Media", "Apple PanicLog Media") and mapped
+# to its "BSD Name".  "ioreg -r -c IOMedia -l" on stdin -> lines "diskN|media name".
+mediamap() {
+  mm_cur=""; mm_seen=$NL
+  while IFS= read -r mm_l || [ -n "$mm_l" ]; do
+    case "$mm_l" in
+      *'+-o '*)
+        mm_cur=""
+        case "$mm_l" in *'<class IOMedia,'*|*'<class IOMedia>'*)
+          mm_cur=${mm_l##*'+-o '}; mm_cur=${mm_cur%%<class*}
+          while :; do case "$mm_cur" in *' ') mm_cur=${mm_cur% } ;; *) break ;; esac; done ;;
+        esac
+        continue ;;
+    esac
+    [ -n "$mm_cur" ] || continue
+    case "$mm_l" in
+      *'"BSD Name" = "'*)
+        mm_b=${mm_l##*'"BSD Name" = "'}; mm_b=${mm_b%%\"*}
+        case "$mm_seen" in *"$NL$mm_b$NL"*) ;; *) mm_seen="$mm_seen$mm_b$NL"; printf '%s|%s\n' "$mm_b" "$mm_cur" ;; esac
+        mm_cur="" ;;
+    esac
+  done
+}
+MAP=""
+have ioreg && MAP=$(ior -r -c IOMedia -l | clean | mediamap)
+media_of() {
+  printf '%s\n' "$MAP" | {
+    while IFS= read -r mo_l || [ -n "$mo_l" ]; do
+      case "$mo_l" in *'|'*) ;; *) continue ;; esac
+      [ "${mo_l%%|*}" = "$1" ] || continue
+      mo_v=${mo_l#*|}; printf '%s\n' "${mo_v%%|*}"; break
+    done
+  }
+}
+# lowercase ERE on the media name -> BSD name of the first matching whole disk
+dev_of() {
+  printf '%s\n' "$MAP" | grep -E -e '^disk[0-9]+\|' | grep -i -E -e "^[^|]*\|[^|]*($1)" | head -n 1 | cut -d'|' -f1
+}
+
+if [ -n "$MAP" ]; then
+  mapsrc=ioreg
+  nand_dev=$(dev_of 'nand media'); fw_dev=$(dev_of 'firmware')
+  llb_dev=$(dev_of 'llb'); panic_dev=$(dev_of 'panic')
+else
+  # No registry map: only the two assignments that have held on every pod so
+  # far.  LLB / PanicLog are deliberately NOT guessed.
+  mapsrc=fallback
+  nand_dev=disk0; fw_dev=disk2; llb_dev=""; panic_dev=""
+  note "IOMedia name map unavailable - disk0=NAND / disk2=Firmware assumed, LLB and PanicLog devices not identified"
+fi
+main_dev=${nand_dev:-disk0}
+
+devs=""; n=0; unreadable=0; fw_valid=""; llb_valid=""; panic_seen=""; r0=missing
+for d in /dev/rdisk* /dev/disk*; do
+  [ -e "$d" ] || continue
+  n=$((n+1)); base=${d##*/}; bsd=${base#r}
+  if [ -b "$d" ]; then node=block; elif [ -c "$d" ]; then node=char; else node=other; fi
+  media=$(media_of "$bsd")
+  role=""
+  [ -n "$nand_dev" ] && [ "$bsd" = "$nand_dev" ] && role=nand
+  [ -n "$fw_dev" ] && [ "$bsd" = "$fw_dev" ] && role=firmware
+  [ -n "$llb_dev" ] && [ "$bsd" = "$llb_dev" ] && role=llb
+  [ -n "$panic_dev" ] && [ "$bsd" = "$panic_dev" ] && role=panic-log
+  o="{\"dev\":\"$d\",\"node\":\"$node\""
+  [ -n "$media" ] && o="$o,\"media\":$(jstr "$media")"
+  [ -n "$role" ] && o="$o,\"role\":\"$role\""
+  # Probe 1: is the device readable at all?
+  bytes=$(( $(rd "$d" 1 | wc -c) )); bytes=${bytes:-0}
+  if [ "$bytes" -gt 0 ]; then
+    scan=1; type=data
+    case "$role" in
+      firmware) scan=$FW_MB; type=firmware ;;
+      llb) type=llb ;;
+      panic-log) type=panic-log ;;
+    esac
+    # Probe 2: bytes that are neither 0x00 nor 0xFF (erased) = real content.
+    # (one hex byte per line; grep counts the lines that are not 00 / ff.  Only
+    # zero vs non-zero is used, so this need not be a byte count.)
+    live=$(( $(rd "$d" 1 | hexdump -v -e '1/1 "%02x\n"' 2>/dev/null | grep -c -v -e '^00$' -e '^ff$') ))
+    magic=$(rd "$d" 1 | head -c 16 | hexdump -v -e '16/1 "%02x"' 2>/dev/null)
+    [ -n "$magic" ] || magic=$(rd "$d" 1 | head -c 16 | xxd -p 2>/dev/null)
+    # Probe 3: container magics / boot-chain strings.  IM4P/IMG4/IM4M are the
+    # img4 DER tags, illb/ibot the LLB/iBoot payload types, iBoot-<ver> the
+    # plaintext IM4P description, NXSB the APFS container superblock.
+    # grep -a: the region is binary; every pattern is printable text, so no
+    # match can span a non-printable byte and no strings(1) pass is needed.
+    marks=$(rd "$d" "$scan" | grep -a -o -E 'IM4P|IMG4|IM4M|illb|ibot|iBoot-[0-9.]+|iBoot|LLB for|Util_Find_SysCfg|NXSB|panic' | sortu | head -12)
+    empty=false; [ "${live:-0}" -eq 0 ] && empty=true
+    case "$marks" in *NXSB*) [ "$type" = data ] && type=apfs ;; esac
+    [ "$type" = data ] && [ "$empty" = true ] && type=blank
+    o="$o,\"readable\":true,\"bytes\":$bytes,\"type\":\"$type\",\"magic\":\"$magic\",\"empty\":$empty"
+    o="$o,\"markers\":$(printf '%s\n' "$marks" | lines_json 12)"
+    if [ "$type" = firmware ] || [ "$type" = llb ]; then
+      img4=false; case "$marks" in *IM4P*|*IMG4*) img4=true ;; esac
+      boot=false; case "$marks" in *illb*|*ibot*|*iBoot*|*LLB*) boot=true ;; esac
+      o="$o,\"img4\":$img4,\"bootStrings\":$boot"
+      [ "$type" = firmware ] && [ "$base" = "r$fw_dev" ] && fw_valid=$img4
+      [ "$type" = llb ] && [ "$base" = "r$llb_dev" ] && llb_valid=$img4
+    fi
+    if [ "$type" = panic-log ]; then
+      [ -n "$panic_seen" ] || panic_seen=false
+      case "$marks" in *panic*) panic_seen=true ;; esac
+    fi
+    [ "$base" = "r$main_dev" ] && r0=ok
+  else
+    unreadable=$((unreadable+1))
+    [ "$base" = "r$main_dev" ] && r0=unreadable
+    o="$o,\"readable\":false,\"bytes\":0"
+  fi
+  devs="$devs${devs:+,}$o}"
+done
+
+# Expected layout: by name when the registry map is available (NAND, Firmware,
+# LLB, PanicLog media each with a raw device node), else rdisk0-rdisk3 exist.
+expected=true; absent=""
+if [ "$mapsrc" = ioreg ]; then
+  for pair in "NAND:$nand_dev" "Firmware:$fw_dev" "LLB:$llb_dev" "PanicLog:$panic_dev"; do
+    nm=${pair%%:*}; dv=${pair#*:}
+    if [ -z "$dv" ] || [ ! -e "/dev/r$dv" ]; then expected=false; absent="$absent${absent:+, }$nm"; fi
+  done
+else
+  for b in rdisk0 rdisk1 rdisk2 rdisk3; do [ -e "/dev/$b" ] || { expected=false; absent="$absent${absent:+, }$b"; }; done
+fi
+mapj=""
+if [ -n "$MAP" ]; then
+  OLDIFS=$IFS; IFS='
+'
+  for l in $MAP; do mapj="$mapj${mapj:+,}{\"bsd\":$(jstr "${l%%|*}"),\"media\":$(jstr "${l#*|}")}"; done
+  IFS=$OLDIFS
+fi
+add devices "[$devs]"
+add deviceCount "$n"
+add mapSource "\"$mapsrc\""
+add mediaMap "[$mapj]"
+[ -n "$nand_dev" ] && add nandDevice "\"/dev/r$nand_dev\""
+[ -n "$fw_dev" ] && add firmwareDevice "\"/dev/r$fw_dev\""
+[ -n "$llb_dev" ] && add llbDevice "\"/dev/r$llb_dev\""
+[ -n "$panic_dev" ] && add panicDevice "\"/dev/r$panic_dev\""
+add expectedPresent "$expected"
+add firmwareValid "$fw_valid"
+add llbValid "$llb_valid"
+add panicLogHasPanic "$panic_seen"
+add raw "$(jraw "$(ls -la /dev/disk* /dev/rdisk* 2>/dev/null)
+## IOMedia map ($mapsrc)
+$MAP")"
+
+if [ "$n" -eq 0 ]; then
+  note "no /dev/disk* or /dev/rdisk* devices - NAND did not enumerate"
+  finish true fail
+fi
+verdict=pass
+[ "$expected" = true ] || { verdict=warn; note "expected region(s) missing: $absent"; }
+[ "$unreadable" -eq 0 ] || { verdict=warn; note "$unreadable device(s) returned no data"; }
+if [ "$fw_valid" = false ]; then verdict=warn; note "r$fw_dev (firmware) readable but no img4 magic in first ${FW_MB} MiB"; fi
+[ -n "$fw_valid" ] || note "firmware region${fw_dev:+ (r$fw_dev)} not readable or absent - boot chain not checked"
+[ "$llb_valid" = false ] && note "r$llb_dev (LLB) readable but no img4 magic found"
+[ "$panic_seen" = true ] && { [ "$verdict" = pass ] && verdict=warn; note "panic log region (r$panic_dev) contains panic text"; }
+[ -n "$panic_dev" ] || note "panic log device not identified - panic check skipped"
+[ "$r0" = ok ] || { verdict=fail; note "r$main_dev (main NAND) $r0"; }
+finish true "$verdict"

@@ -10,7 +10,7 @@ import Glibc
 /// real `SerialPort` code (termios, poll, partial reads, hang-up) is exercised
 /// without hardware. The test opens `slavePath` as if it were the USB adapter.
 private final class FakeDiagsShell {
-    static let ecid = "00092951386A6F26"
+    static let ecid = "0000000000000001"
     static let prompt = "[\(ecid)] :-) "
 
     let master: Int32
@@ -133,13 +133,13 @@ final class DiagsSerialTests: XCTestCase {
     }
 
     func testCleanOutputRemovesEchoAndPrompt() {
-        let raw = "sysinfo\r\n\u{1B}[0;35mWARNING: x\u{1B}[0m\r\nBoard: b238aap   \r\n\r\nExit code = 0x00000000\r\n[00092951386A6F26] :-) "
+        let raw = "sysinfo\r\n\u{1B}[0;35mWARNING: x\u{1B}[0m\r\nBoard: b238aap   \r\n\r\nExit code = 0x00000000\r\n[0000000000000001] :-) "
         XCTAssertEqual(DiagsSerialSession.cleanOutput(raw, command: "sysinfo"),
                        "WARNING: x\nBoard: b238aap\n\nExit code = 0x00000000")
         // Prompt redrawn in front of the echo.
-        XCTAssertEqual(DiagsSerialSession.cleanOutput("[AB] :-) sn\r\nCC4VKKTQHQK8\r\n[AB] :-) ", command: "sn"), "CC4VKKTQHQK8")
+        XCTAssertEqual(DiagsSerialSession.cleanOutput("[AB] :-) sn\r\nSERIAL000001\r\n[AB] :-) ", command: "sn"), "SERIAL000001")
         // No echo at all: the first line is output and must be kept.
-        XCTAssertEqual(DiagsSerialSession.cleanOutput("CC4VKKTQHQK8\r\n[AB] :-) ", command: "sn"), "CC4VKKTQHQK8")
+        XCTAssertEqual(DiagsSerialSession.cleanOutput("SERIAL000001\r\n[AB] :-) ", command: "sn"), "SERIAL000001")
         // Output whose first line merely starts with the command word is kept.
         XCTAssertEqual(DiagsSerialSession.cleanOutput("sn: not set\r\n[AB] :-) ", command: "sn"), "sn: not set")
         XCTAssertEqual(DiagsSerialSession.cleanOutput("version\r\n[AB] :-) ", command: "version"), "")
@@ -158,7 +158,7 @@ final class DiagsSerialTests: XCTestCase {
         XCTAssertEqual(bad.exitCode, "0x8000000E")
         XCTAssertFalse(bad.succeeded)
 
-        let quiet = DiagsSerialSession.result(command: "sn", rawOutput: "sn\r\nCC4VKKTQHQK8\r\n[AB] :-) ")
+        let quiet = DiagsSerialSession.result(command: "sn", rawOutput: "sn\r\nSERIAL000001\r\n[AB] :-) ")
         XCTAssertNil(quiet.exitCode)
         XCTAssertTrue(quiet.succeeded)
 
@@ -170,21 +170,21 @@ final class DiagsSerialTests: XCTestCase {
     }
 
     func testPromptAndECID() throws {
-        let found = try XCTUnwrap(DiagsSerialSession.prompt(in: "boot log\r\n\u{1B}[0m[00092951386a6f26] :-) "))
-        XCTAssertEqual(found.line, "[00092951386a6f26] :-)")
-        XCTAssertEqual(found.ecid, "00092951386A6F26")
+        let found = try XCTUnwrap(DiagsSerialSession.prompt(in: "boot log\r\n\u{1B}[0m[0000000000000001] :-) "))
+        XCTAssertEqual(found.line, "[0000000000000001] :-)")
+        XCTAssertEqual(found.ecid, "0000000000000001")
         XCTAssertNil(DiagsSerialSession.prompt(in: "no prompt here"))
         XCTAssertNil(try XCTUnwrap(DiagsSerialSession.prompt(in: ":-) ")).ecid)
     }
 
     func testParseSysCfgList() {
         let text = """
-        Key: SrNm = CC4VKKTQHQK8
-        Key: MLB# = CC4741500NYJK2N1K
+        Key: SrNm = SERIAL000001
+        Key: MLB# = MLBSERIAL00000001
         Key: Regn = LL/A
         Key: CFG# = 0
-        Key: WMac = 0xE37A81D0 0x00009476 0x00000000 0x00000000
-        Key: MdlC = 0;MoPED=0x617B20F1D1A2D12A22D16A82251C581194B75F07
+        Key: WMac = 0xCCBBAA02 0x000001DD 0x00000000 0x00000000
+        Key: MdlC = 0;MoPED=0x0000000000000000000000000000000000000001
         Key: WCAL = 0x00000001 0x00000002
         0x00000003 0x00000004
         some unrelated line = with an equals sign
@@ -192,12 +192,12 @@ final class DiagsSerialTests: XCTestCase {
         """
         let entries = DiagsSerialSession.parseSysCfgList(text)
         XCTAssertEqual(entries.map(\.key), ["SrNm", "MLB#", "Regn", "CFG#", "WMac", "MdlC", "WCAL"])
-        XCTAssertEqual(entries[0].value, "CC4VKKTQHQK8")
+        XCTAssertEqual(entries[0].value, "SERIAL000001")
         XCTAssertEqual(entries[0].meaning, "Serial number")
         XCTAssertFalse(entries[0].isBinary)
         XCTAssertEqual(entries[3].value, "0")
-        XCTAssertEqual(entries[4].words, [0xE37A81D0, 0x00009476, 0, 0])
-        XCTAssertEqual(entries[5].value, "0;MoPED=0x617B20F1D1A2D12A22D16A82251C581194B75F07", "only the first = splits")
+        XCTAssertEqual(entries[4].words, [0xCCBBAA02, 0x000001DD, 0, 0])
+        XCTAssertEqual(entries[5].value, "0;MoPED=0x0000000000000000000000000000000000000001", "only the first = splits")
         XCTAssertEqual(entries[6].words, [1, 2, 3, 4], "continuation lines of hex words join the entry")
 
         // Bare `XXXX = value` lines are accepted; a repeated key keeps the last value.
@@ -207,8 +207,8 @@ final class DiagsSerialTests: XCTestCase {
     }
 
     func testValueFromPrint() {
-        XCTAssertEqual(DiagsSerialSession.valueFromPrint("Key: SrNm = CC4VKKTQHQK8", key: "SrNm"), "CC4VKKTQHQK8")
-        XCTAssertEqual(DiagsSerialSession.valueFromPrint("CC4VKKTQHQK8\nExit code = 0x00000000", key: "SrNm"), "CC4VKKTQHQK8")
+        XCTAssertEqual(DiagsSerialSession.valueFromPrint("Key: SrNm = SERIAL000001", key: "SrNm"), "SERIAL000001")
+        XCTAssertEqual(DiagsSerialSession.valueFromPrint("SERIAL000001\nExit code = 0x00000000", key: "SrNm"), "SERIAL000001")
     }
 
     func testValidation() {
@@ -586,7 +586,7 @@ final class DiagsSerialTests: XCTestCase {
 
     func testPromptCommandAndECID() throws {
         let shell = try FakeDiagsShell()
-        shell.replies["sn"] = "Serial: CC4VKKTQHQK8\r\nExit code = 0x00000000\r\n"
+        shell.replies["sn"] = "Serial: SERIAL000001\r\nExit code = 0x00000000\r\n"
         let session = try connect(shell)
         defer { session.port.close(); shell.unplug() }
 
@@ -597,7 +597,7 @@ final class DiagsSerialTests: XCTestCase {
 
         let result = try session.runCommand("sn")
         XCTAssertEqual(result.command, "sn")
-        XCTAssertEqual(result.cleanOutput, "Serial: CC4VKKTQHQK8\nExit code = 0x00000000")
+        XCTAssertEqual(result.cleanOutput, "Serial: SERIAL000001\nExit code = 0x00000000")
         XCTAssertEqual(result.exitCode, "0x00000000")
         XCTAssertFalse(result.hasError)
         XCTAssertTrue(result.rawOutput.hasPrefix("sn\r\n"))
@@ -623,7 +623,7 @@ final class DiagsSerialTests: XCTestCase {
         // ~150 KB of hex words dribbled out 512 bytes at a time: the idle
         // timeout (0.5 s here) must keep being pushed back while data flows.
         let blob = (0..<13_000).map { String(format: "0x%08X", $0) }.joined(separator: " ")
-        shell.replies["syscfg list"] = "Key: SrNm = CC4VKKTQHQK8\r\nKey: WCAL = \(blob)\r\nKey: Regn = LL/A\r\n"
+        shell.replies["syscfg list"] = "Key: SrNm = SERIAL000001\r\nKey: WCAL = \(blob)\r\nKey: Regn = LL/A\r\n"
         shell.chunkSize = 512
         let session = try connect(shell)
         defer { session.port.close(); shell.unplug() }

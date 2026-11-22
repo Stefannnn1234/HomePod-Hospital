@@ -54,8 +54,8 @@ UART will show `BUILD_STYLE: DEVELOPMENT` and the DIAGS shell prompt:
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `SrNm` | Serial number | CC4VKKTQHQK8 |
-| `MLB#` | MLB serial | CC4741500NYJK2N1K |
+| `SrNm` | Serial number | SERIAL000001 |
+| `MLB#` | MLB serial | MLBSERIAL00000001 |
 | `Mod#` | Model number | MQHW2 |
 | `Regn` | Region | LL/A |
 | `RMd#` | Regulatory model | A1639 |
@@ -100,8 +100,8 @@ environment runs from the diag.img4 loaded over USB, not from NAND.
 
 ```
 syscfg init
-syscfg add SrNm CC4VKKTQHQK8
-syscfg add MLB# CC4741500NYJK2N1K
+syscfg add SrNm SERIAL000001
+syscfg add MLB# MLBSERIAL00000001
 syscfg add Mod# MQHW2
 syscfg add Regn LL/A
 syscfg add RMd# A1639
@@ -293,8 +293,8 @@ These appear in the log of a dead-SEP restore but are **not** the fault:
 
 ### Reference capture
 
-The pod this was diagnosed on (ECID `00165CD928EA60A6`, serial
-`DLXVVMWEJ265`) has its logs saved in the app folder:
+The pod this was diagnosed on (ECID `0000000000000002`, serial
+`SERIAL000002`) has its logs saved in the app folder:
 
 - `uartlogduringrestoreattempt.0` — full restore attempt, `iBoot-11881.80.57`,
   `load_sep_os` at line ~1481, panic at line ~1530, `IBFL:1C` then `IBFL:1D`.

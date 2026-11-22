@@ -14,7 +14,7 @@ FW="$APP/Contents/Frameworks"
 WORK="$ROOT/.build/tools"
 mkdir -p "$BIN" "$FW" "$WORK"
 
-command -v dylibbundler >/dev/null || { echo "Install dylibbundler first: brew install dylibbundler"; exit 1; }
+command -v dylibbundler >/dev/null || { echo "Bundling the restore tools needs dylibbundler:  brew install dylibbundler"; echo "(or build without the tools inside:  BUNDLE_TOOLS=0 ./scripts/build-app.sh)"; exit 1; }
 
 echo "==> Building patched gaster (GASTER_ECID)"
 if [ ! -d "$WORK/gaster/.git" ]; then git clone https://github.com/0x7ff/gaster.git "$WORK/gaster"; fi
@@ -27,7 +27,7 @@ grep -q GASTER_ECID <<<"$GASTER_USAGE" || { echo "$GASTER_USAGE"; echo "patched 
 
 echo "==> Copying idevicerestore + irecovery"
 IDR="$(command -v idevicerestore || true)"
-[ -n "$IDR" ] || { echo "idevicerestore not found — install it per the guide first"; exit 1; }
+[ -n "$IDR" ] || { echo "idevicerestore not found — install it per the guide first (or run the app once and use Setup → Install tools)."; echo "(or build without the tools inside:  BUNDLE_TOOLS=0 ./scripts/build-app.sh)"; exit 1; }
 IDR_VERSION="$("$IDR" -v 2>&1 || true)"
 grep -q d2e1c4f <<<"$IDR_VERSION" || echo "WARNING: $IDR is not the d2e1c4f build the guide uses ($IDR_VERSION)"
 cp "$IDR" "$BIN/idevicerestore"

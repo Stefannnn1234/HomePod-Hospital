@@ -98,6 +98,7 @@ echo "[*] Writing MANIFEST"
 {
 	echo "nicotine-payload 1"
 	echo "variant=public"
+	echo "build=$(grep '^VERSION_ID=' "$WORK/rootfs/etc/os-release" 2>/dev/null | head -n 1 | cut -d= -f2 | tr -d '"')"
 	echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	for f in img4/RestoreKernelCache_m1n1-linux.img4 img4/RestoreDeviceTree_b238aap.img4 img4/RestoreTrustCache.img4 homepod-config.sh; do
 		( cd "$OUT" && shasum -a 256 "$f" 2>/dev/null || sha256sum "$f" )

@@ -1,0 +1,15 @@
+#!/bin/sh
+PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin
+export PATH
+# Thin wrapper: microphone-only view of hpdiag-sensors (tool "mic").
+# It makes no ioreg call of its own.  The suite's standard ANSI-stripping ioreg
+# wrapper is still defined so that any query ever added here goes through it;
+# as everywhere else, never a bare "ioreg -l" - targeted "-r -c <Class>" only.
+ESC=$(printf '\033')
+ior() { ioreg -w 0 "$@" 2>/dev/null | sed -e "s/${ESC}\[[0-9;]*m//g"; }
+# (no dirname on the ramdisk: strip the last path component with the shell)
+case "$0" in */*) d=${0%/*} ;; *) d=. ;; esac
+if [ -x "$d/hpdiag-sensors" ]; then exec "$d/hpdiag-sensors" mic; fi
+# Pushed or copied without its exec bit: run it through the shell instead.
+if [ -f "$d/hpdiag-sensors" ]; then exec sh "$d/hpdiag-sensors" mic; fi
+exec hpdiag-sensors mic

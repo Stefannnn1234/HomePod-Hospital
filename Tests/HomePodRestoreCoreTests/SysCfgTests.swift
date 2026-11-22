@@ -109,9 +109,9 @@ final class SysCfgTests: XCTestCase {
     }
     func testIORegPropertyExtractionAndCarve() {
         // Real path: ioreg output (ANSI-colourized) carrying AppleDiagnosticDataSysCfg.
-        let blob = SysCfgTests.makeBlob(serial: "CC4VKKTQHQK8",
-                                        wifi: [0xd0,0x81,0x7a,0xe3,0x76,0x94],
-                                        bt:   [0xd0,0x81,0x7a,0xe3,0x76,0x95])
+        let blob = SysCfgTests.makeBlob(serial: "SERIAL000001",
+                                        wifi: [0x02,0xaa,0xbb,0xcc,0xdd,0x01],
+                                        bt:   [0x02,0xaa,0xbb,0xcc,0xdd,0x02])
         let hex = blob.map { String(format: "%02x", $0) }.joined()
         let text = "    | | \u{1B}[0;0m\"AppleDiagnosticDataSysCfg\" = \u{1B}[0;31m<\(hex)>\u{1B}[0;0m\n    | | \"Other\" = <00>\n"
         guard let extracted = SSHRamdiskTransport.extractIORegHexProperty("AppleDiagnosticDataSysCfg", from: text) else {
@@ -119,9 +119,9 @@ final class SysCfgTests: XCTestCase {
         }
         XCTAssertEqual(extracted, blob)
         let parsed = SysCfgParser.parse(extracted)
-        XCTAssertEqual(parsed.serialNumber, "CC4VKKTQHQK8")
-        XCTAssertEqual(parsed.wifiMAC, "d0:81:7a:e3:76:94")
-        XCTAssertEqual(parsed.bluetoothMAC, "d0:81:7a:e3:76:95")
+        XCTAssertEqual(parsed.serialNumber, "SERIAL000001")
+        XCTAssertEqual(parsed.wifiMAC, "02:aa:bb:cc:dd:01")
+        XCTAssertEqual(parsed.bluetoothMAC, "02:aa:bb:cc:dd:02")
     }
     func testWriteGateRefusesPlaceholderSink() async {
         // Default/placeholder sink must never write to NAND.

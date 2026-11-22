@@ -2,7 +2,7 @@
 # find-firmware.sh — locate the WiFi/BT firmware inside an audioOS restore IPSW so
 # we can map it to the Linux brcmfmac layout. Mounts the OS filesystem and reports
 # every firmware-looking file (path, size, sha256). macOS only. Read-only.
-#   ./find-firmware.sh /Users/nic/homepod/homepodstuff/18.3.ipsw
+#   ./find-firmware.sh /Users/you/homepod/homepodstuff/18.3.ipsw
 set -euo pipefail
 IPSW="${1:?usage: find-firmware.sh <audioOS.ipsw>}"
 WORK="$(mktemp -d)"; MNT=""

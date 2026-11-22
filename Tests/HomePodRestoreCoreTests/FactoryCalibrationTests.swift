@@ -77,7 +77,7 @@ final class FactoryCalibrationTests: XCTestCase {
             let bytes = header.count + sections * 100
             return #"{"tag":"\#(tag)","present":true,"bytes":\#(bytes),"blank":false,"magic":"BLOB","headerBytes":\#(header.count),"version":1,"sections":\#(sections),"header":"\#(hex(header))","containerValid":true,"dtProperty":"\#(dt)","dtBytes":\#(bytes),"dtZero":false,"dtMatches":true}"#
         }
-        return #"{"tool":"radio","ok":true,"verdict":"pass","wifi":{"present":true,"driver":"AppleBCMWLANCore","mac":"d0:81:7a:e3:76:94","matchesSysCfg":true},"bt":{"present":true,"mac":"d0:81:7a:e3:76:95","matchesSysCfg":true},"calibration":{"wifi":\#(blob("WCAL", wifiSections, dt: "wifi-calibration-msf")),"bt":\#(blob("BCAL", btSections, dt: "bluetooth-taurus-calibration"))}}"#
+        return #"{"tool":"radio","ok":true,"verdict":"pass","wifi":{"present":true,"driver":"AppleBCMWLANCore","mac":"02:aa:bb:cc:dd:01","matchesSysCfg":true},"bt":{"present":true,"mac":"02:aa:bb:cc:dd:02","matchesSysCfg":true},"calibration":{"wifi":\#(blob("WCAL", wifiSections, dt: "wifi-calibration-msf")),"bt":\#(blob("BCAL", btSections, dt: "bluetooth-taurus-calibration"))}}"#
     }
 
     static let factoryJSON = """
@@ -92,7 +92,7 @@ final class FactoryCalibrationTests: XCTestCase {
         if let factory { results.append(try DiagParsers.parse(.factory, output: factory)) }
         if let radio { results.append(try DiagParsers.parse(.radio, output: radio)) }
         if let audio { results.append(try DiagParsers.parse(.audio, output: audio)) }
-        return FullDiagnosticsReport(serial: "CC4VKKTQHQK8", timestamp: Date(timeIntervalSince1970: 1_794_690_000), results: results)
+        return FullDiagnosticsReport(serial: "SERIAL000001", timestamp: Date(timeIntervalSince1970: 1_794_690_000), results: results)
     }
 
     // MARK: Templates

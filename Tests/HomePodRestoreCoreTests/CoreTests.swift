@@ -238,13 +238,13 @@ final class RealDeviceTests: XCTestCase {
     /// Captured from a real 1st-gen HomePod in DFU mode (Nic's MacBook Pro, Nov 2026).
     func testRealHomePodDFU() {
         let d = ConnectedDevice(locationID: 0x0210_0000, productID: 0x1227, productName: "Apple Mobile Device (DFU Mode)",
-                                serial: "CPID:7000 CPRV:11 CPFM:03 SCEP:01 BDID:38 ECID:001250C230D9A0A6 IBFL:1C SRTG:[iBoot-1992.0.0.1.19]",
+                                serial: "CPID:7000 CPRV:11 CPFM:03 SCEP:01 BDID:38 ECID:0000000000000003 IBFL:1C SRTG:[iBoot-1992.0.0.1.19]",
                                 speed: 2)
         XCTAssertEqual(d.mode, .dfu)
         let ib = d.iboot!
         XCTAssertTrue(ib.isA8)
         XCTAssertTrue(ib.isHomePodBoard)
-        XCTAssertEqual(ib.ecid, 0x001250C230D9A0A6)
+        XCTAssertEqual(ib.ecid, 0x0000000000000003)
         XCTAssertEqual(ib.srtg, "iBoot-1992.0.0.1.19")
         XCTAssertFalse(ib.isPwned)
         XCTAssertEqual(d.portLabel, "USB 2-1")

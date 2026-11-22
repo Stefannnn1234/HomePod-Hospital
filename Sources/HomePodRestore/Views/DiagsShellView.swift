@@ -475,12 +475,12 @@ struct DiagsSysCfgWriteSheet: View {
                 }
                 HStack(alignment: .firstTextBaseline) {
                     Text("Value").foregroundStyle(.secondary).frame(width: 60, alignment: .leading)
-                    TextField("CC4VKKTQHQK8", text: $value)
+                    TextField("SERIAL000001", text: $value)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                         .onSubmit { if canWrite { write() } }
                 }
-                Text("Enter the value exactly as `syscfg list` printed it — text for keys like SrNm, space-separated hex words (0xE37A81D0 0x00009476 …) for binary keys like WMac.")
+                Text("Enter the value exactly as `syscfg list` printed it — text for keys like SrNm, space-separated hex words (0xCCBBAA02 0x000001DD …) for binary keys like WMac.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 

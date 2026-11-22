@@ -102,9 +102,12 @@ capture (AudioAccessory1,1, stock SSH ramdisk). That capture is storage-scoped, 
 
 ## Assumptions about the ramdisk
 
-Needs `sh`, `ioreg`, `dd`, `grep -o/-E`, `sed`, `awk`, `tr`, `head -c`, `cut`, `sort`,
-`wc`, and `hexdump` (falls back to `od`). `timeout` is used for `dd` if present. No
-temp files are written. `strings` and `img4tool` are not required.
+Needs `sh` (bash 3.2 on the 17.5 SSH ramdisk; only POSIX sh features are used),
+`ioreg`, `dd`, `grep -o/-E/-a/-n/-c`, `sed`, `head -c/-n`, `cut`, `wc`, `hexdump`,
+`expr`, `ls`, `mount` and `date` - all present on that ramdisk. The ramdisk has NO
+`awk`, `tr`, `sort`, `od`, `strings`, `base64` or `timeout`, so the scripts use none
+of them (`timeout` is used for `dd` only if present; `xxd` is a fallback for
+`hexdump`). No temp files are written. `img4tool` is not required.
 
 `dd` is called with `bs=1048576` rather than `bs=1m` so it works with both BSD and
 GNU `dd`; the block size is the same.

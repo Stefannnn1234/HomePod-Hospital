@@ -4,7 +4,19 @@ A friendly Mac app for restoring, diagnosing and reviving 1st-gen HomePods (A163
 `AudioAccessory1,1`) over USB. It was called **HomePod Restore** until November 2026; the Swift
 package, its targets and the bundle identifier still carry that name (see "Names" below). Built on the
 [homepod-restore guide](https://github.com/UnbendableStraw/homepod-restore) and the tools from
-tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
+tihmstar, David Ryskalczyk (d235j), 0x7ff, HoolockLinux and libimobiledevice.
+
+## Quick start
+
+```bash
+git clone https://github.com/UnbendableStraw/HomePod-Hospital.git && cd HomePod-Hospital
+./scripts/build-app.sh          # → dist/HomePod Hospital.app and dist/HomePod-Hospital-1.0.0.zip
+```
+
+The build Mac needs macOS 13+, Xcode or the Command Line Tools, `python3`, `brew install
+dylibbundler`, and the restore tools installed once (the guide's steps, or the app's Setup →
+Install tools). The build downloads gaster and HoolockLinux's `remote_boot` from GitHub and, if
+you have no local copy, the audioOS 18.3 IPSW (about 3.4 GB).
 
 ## What it does
 
@@ -30,16 +42,16 @@ tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
   hardware: after restoring firmware, the iOS setup prompt shows the new color. See
   [docs/diags-boot.md](docs/diags-boot.md#color-reconfiguration-space-gray--white).
 - **Nicotine (Linux)**: boots a HomePod from DFU into Nicotine, the Linux system that makes it a
-  standalone AirPlay and Bluetooth speaker — including boards that can no longer run audioOS. Runs
-  the proven `boot-linux.sh` sequence natively, waits for the pod's USB network, opens its web UI
-  and saves / restores its settings (automatically after a boot, if you like). The boot files come
-  from a Nicotine payload: built into the app (`BUNDLE_NICOTINE=1`), imported from a zip, or your
-  own image folder; a payload is checksum-verified before every boot.
-- **Boot loaders built from Apple's own files**: Nicotine boots **only** on boot loaders built from
-  Apple's release audioOS 16.4 — never Apple's development iBoot. A one-time **Build release boot
-  loaders** step (pod in DFU) downloads iBSS/iBEC from Apple, decrypts them on the HomePod with
-  `gaster`, patches them with `hBootPatcher` and signs them with `img4` — all with tools inside the
-  app, no Homebrew or terminal. The Boot button stays blocked until they exist. See
+  standalone AirPlay and Bluetooth speaker — including boards that can no longer run audioOS. Nicotine
+  is always tethered: it runs from RAM, and the Mac has to send it over USB again after every power
+  cut. The app sends the boot files, waits for the pod's USB network, opens its web UI and saves /
+  restores its settings (automatically after a boot, if you like). The Linux image comes from a
+  Nicotine payload: built into the app by default, imported from a zip, or your own folder; it is
+  checksum-verified before every boot.
+- **Boot loaders built from Apple's own files**: before the first Nicotine boot, the **Boot loaders**
+  card → **Build release boot loaders** (pod in DFU) downloads iBSS/iBEC from Apple's audioOS 16.4
+  update, decrypts them on the HomePod with `gaster`, patches them with `hBootPatcher` and wraps them
+  in the app's own code. Once per Mac; the Boot button stays blocked until they exist. See
   [docs/nicotine-boot.md](docs/nicotine-boot.md).
 - **Errors explained**: every message in the guide's Troubleshooting section is mapped to a
   title, explanation and "what to try", with hardware failures flagged as such. "Copy support info"
@@ -48,50 +60,37 @@ tihmstar, David Ryskalczyk (d235j), 0x7ff and libimobiledevice.
 
 ## Building
 
-Needs macOS 13+ and Xcode or the Command Line Tools.
-
 ```bash
-./scripts/build-app.sh                  # → dist/HomePod Hospital.app + zip
-BUNDLE_TOOLS=1 ./scripts/build-app.sh   # recommended: ships every tool inside the app (public build)
-BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh   # + build & bundle Nicotine (needs a 18.3 IPSW; auto-downloaded)
-./scripts/make-nicotine-payload.sh      # → dist/Nicotine-<build>.zip (for "Import Nicotine payload…")
-swift test                              # core unit tests
-HOMEPOD_FAKE_TOOLS=1 swift test         # + end-to-end job tests with fake gaster/idevicerestore
-HOMEPOD_NET_TESTS=1 swift test          # + live partial-zip read of Apple's Apple TV IPSW
+./scripts/build-app.sh                                   # tools + Nicotine payload inside (the default)
+BUNDLE_NICOTINE=0 ./scripts/build-app.sh                 # no Nicotine payload; import one in the app later
+BUNDLE_TOOLS=0 BUNDLE_NICOTINE=0 ./scripts/build-app.sh  # app only; users install tools via Setup
+NICOTINE_SRC_IPSW=~/Downloads/18.3.ipsw ./scripts/build-app.sh   # build Nicotine from this IPSW
+NICOTINE_PAYLOAD_DIR=~/nicotine-payload ./scripts/build-app.sh   # bundle a payload you already built
+swift test                                               # core unit tests
+HOMEPOD_FAKE_TOOLS=1 swift test                          # + end-to-end job tests with fake gaster/idevicerestore
+HOMEPOD_NET_TESTS=1 swift test                           # + live partial-zip read of Apple's Apple TV IPSW
 ```
 
-`BUNDLE_TOOLS=1` needs the tools installed on the build Mac (guide steps or Setup → Install) and
-`brew install dylibbundler`. It also builds `hBootPatcher` (from HoolockLinux's `remote_boot`,
-pinned) and bundles `img4`, so the in-app **Build release boot loaders** step works on a fresh Mac
-with no Homebrew. Bundled tools are for the build Mac's CPU (`Resources/bin/ARCHS`); on other CPUs
-the app falls back to installed tools. With bundled tools, end users don't need Homebrew at all to
-restore or to boot Nicotine.
+**Tools** (`scripts/bundle-tools.sh`, on unless `BUNDLE_TOOLS=0`): builds the patched gaster,
+copies the installed `idevicerestore`, `irecovery` and the SysCfg helpers, and compiles
+`hBootPatcher` from HoolockLinux's `remote_boot` (pinned) with `clang` directly — its Makefile needs
+GNU Make 4 and macOS ships 3.81. If hBootPatcher does not build, the build stops. Bundled tools are
+for the build Mac's CPU only (`Resources/bin/ARCHS`); on another CPU the app uses installed tools.
 
-`BUNDLE_NICOTINE=1` **builds** the Nicotine payload from source and bundles it — no prebuilt payload
-is shipped or hosted. The `nicotine/` kit in this repo holds the kernel, m1n1, device-tree blob and
-the whole Nicotine userspace (all redistributable); the two Apple-derived pieces — the Broadcom
-WiFi/BT firmware and the device tree — are extracted at build time from one audioOS **18.3 restore
-IPSW** (`nicotine/payload-from-ipsw.sh`, pure `python3` + `hdiutil`, no pip). The build finds a local
-18.3 IPSW (`NICOTINE_SRC_IPSW`, `~/Downloads/18.3.ipsw`, `~/homepod/homepodstuff/18.3.ipsw`) or
-downloads one. To bundle a payload you already have instead, set `NICOTINE_PAYLOAD_DIR`.
-
-So a fresh checkout needs nothing but the build: `BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh`
-produces an app that can build release boot loaders and boot Nicotine with no further downloads from
-the user. See [nicotine/README.md](nicotine/README.md) and [docs/nicotine-boot.md](docs/nicotine-boot.md).
-
-**The app is publicly buildable without any private files.** `BUNDLE_TOOLS=1 ./scripts/build-app.sh`
-builds everything — including the Nicotine boot-loader builder's helpers (`hBootPatcher` from
-HoolockLinux, `img4` from xerub/img4lib, `gaster` from 0x7ff), all from public sources. Only the
-Nicotine *payload* (the Linux image: Apple WiFi/Bluetooth firmware + tuning) is private, so
-`BUNDLE_NICOTINE=1` is optional — without it the app still builds and runs, and users add a payload
-in-app with **Import Nicotine payload…** (or you host a `Nicotine-<build>.zip`).
+**Nicotine payload** (on unless `BUNDLE_NICOTINE=0`): built from the `nicotine/` kit in this repo
+plus Apple-derived parts that are fetched or extracted at build time, so nothing proprietary is in
+the repository. The build uses the audioOS 18.3 IPSW named by `NICOTINE_SRC_IPSW`, else the first of
+`~/Downloads/18.3.ipsw`, `~/homepod/homepodstuff/18.3.ipsw`, `dist/18.3.ipsw`, else downloads it once
+from nicsfix.com into `dist/`. `NICOTINE_PAYLOAD_DIR` skips all that and bundles a ready payload
+(it must have a MANIFEST; every file is checked). Details: [nicotine/README.md](nicotine/README.md).
 
 Without bundled tools, Setup opens `scripts/setup-tools.sh` in Terminal. It follows the guide
 (d235j tap, HEAD libs, idevicerestore @ d2e1c4f with the irecv_init fix, removes the tap's
 idevicerestore) and builds gaster with `scripts/patches/gaster-ecid.patch` into
-`~/Library/Application Support/HomePod Hospital/bin`.
+`~/Library/Application Support/HomePod Hospital/bin`. It does not install hBootPatcher, so an app
+built with `BUNDLE_TOOLS=0` cannot build the Nicotine boot loaders.
 
-The app is ad-hoc signed by default; downloaded copies need right-click → Open the first time.
+The app is ad-hoc signed by default; other Macs need right-click → Open the first time.
 Set `SIGN_ID` to a Developer ID and notarize for a smooth first launch.
 
 ## gaster patch
@@ -111,6 +110,8 @@ donate links — no app update needed. If it's missing, the app uses the built-i
 - Logs: `~/Library/Logs/HomePod Hospital/`
 - Firmware: `~/Library/Application Support/HomePod Hospital/Firmware/`
 - Shared restore cache (unpacked rootfs, ~3.3 GB): `…/HomePod Hospital/RestoreCache/`
+- Nicotine boot loaders and settings backups: `…/HomePod Hospital/Nicotine Release iBoot/` and
+  `…/HomePod Hospital/Nicotine Settings/`
 - A Mac that used the app while it was called HomePod Restore keeps its existing
   `HomePod Restore` folders in both places; nothing is moved or re-downloaded.
 - Build work dir (no spaces, makeipsw.sh doesn't quote paths): `~/Library/Caches/HomePodRestore/build/`
@@ -140,19 +141,32 @@ Sources/HomePodRestoreCore/   Foundation-only logic (builds & tests on Linux too
   IPSWBuilder.swift           makeipsw.sh pipeline, partial donor download
   ZipArchive.swift            ZIP/ZIP64 reader over files or HTTP ranges, verbatim entry copier
   Downloader.swift            resumable downloads
-  NicotineBooter.swift        Nicotine (Linux) boot = boot-linux.sh step for step, pod check, settings
-  NicotinePayload.swift       where the boot files come from: lookup order, MANIFEST check, import
-  ReleaseIBoot.swift          builds Nicotine's boot loaders in-app from Apple's audioOS 16.4
+  NicotineBooter.swift        Nicotine boot sequence, pod check, settings save / restore
+  NicotinePayload.swift       where the payload comes from: lookup order, MANIFEST check, import
+  ReleaseIBoot.swift          builds the boot loaders in-app from Apple's audioOS 16.4 (IMG4Wrap)
 Sources/HomePodRestore/       SwiftUI app, IOKit USB monitor
-scripts/                      build-app.sh, bundle-tools.sh (also builds hBootPatcher, bundles img4),
-                              setup-tools.sh, make-nicotine-payload.sh, prep-release-iboot.sh, gaster patch
+nicotine/                     Nicotine payload build kit; kernel/ holds the kernel and m1n1 sources
+scripts/                      build-app.sh, bundle-tools.sh, setup-tools.sh, prep-release-iboot.sh,
+                              gaster patch, ssh-ramdisk-overlay/ (hpdiag-* diagnostic scripts)
 Distribution/manifest.json    remote catalog to host on nicsfix.com
 ```
 
-## Not yet verified on hardware
+## Status and limits
 
-Everything was compiled and type-checked against the macOS SDK and the core logic is unit-tested
-(including fake-tool end-to-end runs), but nothing has run against a real HomePod yet. Things to
-check first: DFU detection/ECID parsing from IOKit, USB speed reporting, the patched gaster with
-two pods connected, two simultaneous idevicerestore runs (each briefly probes the other's
-restore-mode device while looking for its own), and the admin-password build flow.
+- **Tried on hardware, one pod**: the app built, the boot loaders built in the app, and Nicotine
+  booted from the Nicotine page with WiFi and Bluetooth working. The color change is confirmed too.
+- **Not yet run**: the newest build defaults (tools and payload on by default), the rewritten
+  `hpdiag-*` diagnostic scripts, `nicotine/kernel/build.sh`, two pods at once with the patched
+  gaster, two simultaneous idevicerestore runs, the admin-password build flow, any second Mac.
+- The ready-made restore firmware is audioOS 18.3, and Nicotine is built from 18.3.
+- Nicotine's WiFi calibration file and Bluetooth patch are the variants for the USI radio module.
+  A pod whose module reports Murata worked with them in the one case tested, but nothing picks
+  files by module vendor yet.
+- The app is ad-hoc signed (see above).
+
+## Security (Nicotine)
+
+As shipped today, a running Nicotine pod is open to anyone who can reach it: SSH lets in `root`
+with no password and listens on WiFi as well as on the USB cable, and the web UI has no login (its
+Terminal tab runs commands as root). Only use it on a network you trust. Limiting shell access to
+USB and adding a web UI password is planned.

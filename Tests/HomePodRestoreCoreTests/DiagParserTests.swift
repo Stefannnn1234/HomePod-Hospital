@@ -45,7 +45,7 @@ final class DiagParserTests: XCTestCase {
     static let factoryJSON = """
         {"tool":"factory","ok":true,"sysCfgSig":"gfCS","sysCfgBytes":131072,\
         "tagsPresent":["SrNm","WMac","BMac","EMac","Mod#","Regn","RMd#","MLB#"],"tagsMissing":[],\
-        "serial":"CC4VKKTQHQK8","lockers":[],"verdict":"pass"}
+        "serial":"SERIAL000001","lockers":[],"verdict":"pass"}
         """
 
     static let thermalJSON = """
@@ -61,8 +61,8 @@ final class DiagParserTests: XCTestCase {
 
     static let radioJSON = """
         {"tool":"radio","ok":true,\
-        "wifi":{"present":true,"driver":"AppleBCMWLANCore","mac":"d0:81:7a:e3:76:94","matchesSysCfg":true},\
-        "bt":{"present":true,"mac":"d0:81:7a:e3:76:95","matchesSysCfg":true},"verdict":"pass"}
+        "wifi":{"present":true,"driver":"AppleBCMWLANCore","mac":"02:aa:bb:cc:dd:01","matchesSysCfg":true},\
+        "bt":{"present":true,"mac":"02:aa:bb:cc:dd:02","matchesSysCfg":true},"verdict":"pass"}
         """
 
     static let audioJSON = """
@@ -305,7 +305,7 @@ final class DiagParserTests: XCTestCase {
         XCTAssertEqual(factory.signatureValid, true)
         XCTAssertEqual(factory.sysCfgBytes, 131_072)
         XCTAssertEqual(factory.tagsPresent.count, 8)
-        XCTAssertEqual(factory.serial, "CC4VKKTQHQK8")
+        XCTAssertEqual(factory.serial, "SERIAL000001")
         XCTAssertEqual(factory.verdict, .pass)
     }
 
@@ -367,7 +367,7 @@ final class DiagParserTests: XCTestCase {
     func testParseRadio() throws {
         let radio = try DiagParsers.parseRadio(Self.framed(Self.radioJSON))
         XCTAssertEqual(radio.wifi?.driver, "AppleBCMWLANCore")
-        XCTAssertEqual(radio.bt?.mac, "d0:81:7a:e3:76:95")
+        XCTAssertEqual(radio.bt?.mac, "02:aa:bb:cc:dd:02")
         XCTAssertEqual(radio.verdict, .pass)
     }
 
@@ -381,10 +381,10 @@ final class DiagParserTests: XCTestCase {
 
     func testRadioCrossCheckAgainstSysCfg() throws {
         let radio = try DiagParsers.parseRadio(
-            #"{"tool":"radio","wifi":{"present":true,"mac":"D0:81:7A:E3:76:94"},"bt":{"present":true,"mac":"d0:81:7a:e3:76:95"},"verdict":"pass"}"#)
+            #"{"tool":"radio","wifi":{"present":true,"mac":"02:AA:BB:CC:DD:01"},"bt":{"present":true,"mac":"02:aa:bb:cc:dd:02"},"verdict":"pass"}"#)
         XCTAssertNil(radio.wifi?.matchesSysCfg)
 
-        let same = radio.crossChecked(wifiMAC: "d0:81:7a:e3:76:94", bluetoothMAC: "d0:81:7a:e3:76:95")
+        let same = radio.crossChecked(wifiMAC: "02:aa:bb:cc:dd:01", bluetoothMAC: "02:aa:bb:cc:dd:02")
         XCTAssertEqual(same.wifi?.matchesSysCfg, true)
         XCTAssertEqual(same.verdict, .pass)
 
@@ -453,9 +453,9 @@ final class DiagParserTests: XCTestCase {
 
     func testParseFullDocument() throws {
         let tools = DiagTool.allCases.map(Self.json(for:)).joined(separator: ",")
-        let doc = #"{"tool":"full","ok":true,"verdict":"warn","serial":"CC4VKKTQHQK8","timestamp":"2026-11-14T21:00:00Z","overall":"warn","tools":[\#(tools),{"tool":"mystery"}]}"#
+        let doc = #"{"tool":"full","ok":true,"verdict":"warn","serial":"SERIAL000001","timestamp":"2026-11-14T21:00:00Z","overall":"warn","tools":[\#(tools),{"tool":"mystery"}]}"#
         let report = try DiagParsers.parseFull(Self.framed(doc))
-        XCTAssertEqual(report.serial, "CC4VKKTQHQK8")
+        XCTAssertEqual(report.serial, "SERIAL000001")
         XCTAssertEqual(report.timestamp.timeIntervalSince1970, 1_794_690_000)
         XCTAssertEqual(report.results.map(\.name), ["nand", "partmap", "factory", "thermal", "power", "radio", "audio", "sensors"])
         XCTAssertEqual(report.overall, .warn)
@@ -469,7 +469,7 @@ final class DiagParserTests: XCTestCase {
     func testReportExportRoundTrips() throws {
         var results = try DiagTool.allCases.map { try DiagParsers.parse($0, output: Self.framed(Self.json(for: $0))) }
         results.append(.failed(DiagToolFailure(tool: .thermal, message: "timed out", rawOutput: "…")))
-        let report = FullDiagnosticsReport(serial: "CC4VKKTQHQK8", timestamp: Date(timeIntervalSince1970: 1_794_690_000),
+        let report = FullDiagnosticsReport(serial: "SERIAL000001", timestamp: Date(timeIntervalSince1970: 1_794_690_000),
                                            results: FullDiagnosticsReport.mergingSensors(results))
         let data = try report.exportJSON()
         let text = String(decoding: data, as: UTF8.self)
@@ -490,14 +490,14 @@ final class DiagParserTests: XCTestCase {
 
     func testSupportTextRedactsIdentifiers() throws {
         let results = try [DiagTool.nand, .radio].map { try DiagParsers.parse($0, output: Self.json(for: $0)) }
-        let report = FullDiagnosticsReport(serial: "CC4VKKTQHQK8", results: results)
+        let report = FullDiagnosticsReport(serial: "SERIAL000001", results: results)
         let text = report.supportText(appVersion: "1.2")
-        XCTAssertTrue(text.contains("Serial: …HQK8"))
-        XCTAssertFalse(text.contains("CC4VKKTQHQK8"))
-        XCTAssertTrue(text.contains("d0:81:7a:…"))
-        XCTAssertFalse(text.contains("e3:76:94"))
+        XCTAssertTrue(text.contains("Serial: …0001"))
+        XCTAssertFalse(text.contains("SERIAL000001"))
+        XCTAssertTrue(text.contains("02:aa:bb:…"))
+        XCTAssertFalse(text.contains("cc:dd:01"))
         XCTAssertTrue(text.contains("[Storage]"))
-        XCTAssertTrue(report.supportText(redactIdentifiers: false).contains("d0:81:7a:e3:76:94"))
+        XCTAssertTrue(report.supportText(redactIdentifiers: false).contains("02:aa:bb:cc:dd:01"))
     }
 
     // MARK: Controller (no hardware)
@@ -540,11 +540,11 @@ final class DiagParserTests: XCTestCase {
     }
 
     func testControllerAssemblesReport() async throws {
-        let blob = Self.sysCfgBlob(serial: "CC4VKKTQHQK8", wifi: [0xd0, 0x81, 0x7a, 0xe3, 0x76, 0x94], bt: [0xd0, 0x81, 0x7a, 0xe3, 0x76, 0x95])
+        let blob = Self.sysCfgBlob(serial: "SERIAL000001", wifi: [0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0x01], bt: [0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0x02])
         var outputs = Self.allOutputs()
         // Radio script that didn't compare: the Mac side fills it in from SysCfg.
         outputs[DiagCommands.radio] = Self.framed(
-            #"{"tool":"radio","ok":true,"wifi":{"present":true,"mac":"d0:81:7a:e3:76:94"},"bt":{"present":true,"mac":"d0:81:7a:e3:76:99"},"verdict":"pass"}"#)
+            #"{"tool":"radio","ok":true,"wifi":{"present":true,"mac":"02:aa:bb:cc:dd:01"},"bt":{"present":true,"mac":"02:aa:bb:cc:dd:09"},"verdict":"pass"}"#)
         // Factory script without a serial: falls back to the SysCfg read.
         outputs[DiagCommands.factory] = Self.framed(#"{"tool":"factory","ok":true,"sysCfgSig":"gfCS","tagsPresent":["SrNm","WMac","BMac"],"tagsMissing":[],"verdict":"pass"}"#)
         let pod = BootedPod(transport: FakeSysCfgTransport(seed: blob), shell: FakeShell(outputs: outputs), teardown: {})
@@ -553,7 +553,7 @@ final class DiagParserTests: XCTestCase {
         let outcome = await FullDiagnosticsController.run(on: pod, onProgress: { progress.add($0) })
         guard case .ok(let report) = outcome else { return XCTFail("expected a report, got \(outcome)") }
 
-        XCTAssertEqual(report.serial, "CC4VKKTQHQK8")
+        XCTAssertEqual(report.serial, "SERIAL000001")
         XCTAssertEqual(report.results.count, 8, "mic + accel fold into one sensors entry")
         XCTAssertTrue(report.incomplete.isEmpty)
         guard case .radio(let radio)? = report.results.first(where: { $0.name == "radio" }) else { return XCTFail("no radio") }
@@ -575,7 +575,7 @@ final class DiagParserTests: XCTestCase {
 
         guard case .ok(let report) = await FullDiagnosticsController.run(on: pod) else { return XCTFail("expected a report") }
         XCTAssertEqual(report.incomplete.map(\.name).sorted(), ["power", "thermal"])
-        XCTAssertEqual(report.serial, "CC4VKKTQHQK8", "serial comes from the factory tool when SysCfg has none")
+        XCTAssertEqual(report.serial, "SERIAL000001", "serial comes from the factory tool when SysCfg has none")
         XCTAssertEqual(report.overall, .warn)
         XCTAssertEqual(report.rows(in: .environment).first { $0.id == "thermal.status" }?.value, "Couldn't check")
     }

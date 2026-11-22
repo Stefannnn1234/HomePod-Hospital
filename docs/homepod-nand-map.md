@@ -1,6 +1,6 @@
 # HomePod (AudioAccessory1,1 / A8) NAND map — observed from the SSH ramdisk
 
-Observed on a live pod (ECID …6a6f26) over the d235j homepod ssh-ramdisk.
+Observed on a live pod (ECID …000001) over the d235j homepod ssh-ramdisk.
 Read raw devices with `dd bs=1m` (512-byte reads return nothing — needs large
 aligned blocks).
 
@@ -17,7 +17,7 @@ aligned blocks).
   `AppleDiagnosticDataSysCfg` on `AppleDiagnosticDataAccessReadOnly`
   (`ioreg -r -c AppleDiagnosticDataAccessReadOnly -l`). The real capture is
   131072 bytes, signature `gfCS`. The app's reversed-key parser carves it to:
-  Serial CC4VKKTQHQK8, Wi-Fi d0:81:7a:e3:76:94, BT …:95, Eth …:96,
+  Serial SERIAL000001, Wi-Fi 02:aa:bb:cc:dd:01, BT …:02, Eth …:03,
   Model MQHW2, Region LL/A, RModel A1639 — validated against the on-device dump.
 - Write path: plumbing is **ready and safe** (write → read back → byte-compare,
   refuse on mismatch), but **gated** — it refuses until the on-device *sink* (how

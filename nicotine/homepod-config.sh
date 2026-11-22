@@ -17,7 +17,7 @@
 #
 # Talks to the pod over the USB network (http://172.16.42.1). Needs only curl.
 # To reach it another way, set HOMEPOD_URL, for example
-#   HOMEPOD_URL=http://192.168.1.147 ./homepod-config.sh save
+#   HOMEPOD_URL=http://192.0.2.10 ./homepod-config.sh save
 # Works with the bash 3.2 that ships with macOS.
 set -u
 

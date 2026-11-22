@@ -2433,7 +2433,7 @@ enum DiagFormat {
         return "\(String(chars[0..<2])):\(String(chars[2..<4])):\(String(chars[4..<6])):…"
     }
 
-    /// "…HQK8".
+    /// "…0001".
     static func redactedSerial(_ serial: String) -> String {
         serial.count > 4 ? "…" + serial.suffix(4) : serial
     }

@@ -1,0 +1,3736 @@
+diff --git a/arch/arm64/boot/dts/apple/Makefile b/arch/arm64/boot/dts/apple/Makefile
+index 9fea43f76..778267d34 100644
+--- a/arch/arm64/boot/dts/apple/Makefile
++++ b/arch/arm64/boot/dts/apple/Makefile
+@@ -10,6 +10,7 @@ dtb-$(CONFIG_ARCH_APPLE) += s5l8960x-j85.dtb
+ dtb-$(CONFIG_ARCH_APPLE) += s5l8960x-j86.dtb
+ dtb-$(CONFIG_ARCH_APPLE) += s5l8960x-j87.dtb
+ dtb-$(CONFIG_ARCH_APPLE) += s5l8960x-n51.dtb
++dtb-$(CONFIG_ARCH_APPLE) += t7000-b238a.dtb
+ dtb-$(CONFIG_ARCH_APPLE) += t7000-j42d.dtb
+ dtb-$(CONFIG_ARCH_APPLE) += t7000-j96.dtb
+ dtb-$(CONFIG_ARCH_APPLE) += t7000-j97.dtb
+diff --git a/arch/arm64/boot/dts/apple/t7000-b238a.dts b/arch/arm64/boot/dts/apple/t7000-b238a.dts
+new file mode 100644
+index 000000000..79fdc2a03
+--- /dev/null
++++ b/arch/arm64/boot/dts/apple/t7000-b238a.dts
+@@ -0,0 +1,655 @@
++// SPDX-License-Identifier: GPL-2.0+ OR MIT
++/*
++ * Apple HomePod (1st generation), B238a, AudioAccessory1,1 (A1639)
++ *
++ * target-type: B238a  (target-sub-type B238aAP, BDID 0x38, CPID 0x7000)
++ *
++ * Every address, interrupt and GPIO number in this file was taken from
++ * Apple's own device tree for this board (DeviceTree.b238aap.im4p, tag
++ * EmbeddedDeviceTrees-9682.80.53, audioOS 18.3 / 22K557, cross-checked
++ * against EmbeddedDeviceTrees-3480.40.4, audioOS 11.2.5 / 15D59).
++ * See t7000-b238a-NOTES.md for the full provenance of each node and for
++ * the list of things that are still guesses.
++ *
++ * Legend used in comments below:
++ *   [ADT]     value read from Apple's device tree
++ *   [DRIVER]  a Linux driver exists and binds to this node
++ *   [NODRV]   hardware description only: no binding and no driver exists,
++ *             the compatible string is a placeholder and the node is disabled
++ *   [GUESS]   not confirmed by any source
++ */
++
++/dts-v1/;
++
++#include "t7000.dtsi"
++#include "t7000-common.dtsi"
++
++/ {
++	compatible = "apple,b238a", "apple,t7000", "apple,arm-platform";
++	model = "Apple HomePod (1st generation)";
++	chassis-type = "embedded";
++
++	aliases {
++		/*
++		 * serial0 (debug console) and serial6 come from
++		 * t7000-common.dtsi. The loader (m1n1) copies the Wi-Fi and
++		 * Bluetooth MAC addresses out of SysCfg into whatever these
++		 * two aliases point at.
++		 */
++		serial1 = &serial1;
++		serial3 = &serial3;
++		serial8 = &serial8;
++		bluetooth0 = &bluetooth;
++		wifi0 = &wifi;
++	};
++
++	chosen {
++		/*
++		 * [ADT] /defaults/serial-device points at uart0, which also
++		 * carries "boot-console" and the "debug-console" child. This
++		 * is the 115200 8N1 UART on the debug connector under the
++		 * base. Note this differs from the Apple TV HD (serial6).
++		 */
++		stdout-path = "serial0:115200n8";
++	};
++
++	/*
++	 * 1 GiB of LPDDR3, package-on-package with the A8. The loader
++	 * replaces this with the real usable range (iBoot keeps the top of
++	 * RAM for TrustZone/SEP and its own carve-outs), so the value here
++	 * is only a default and must never be relied on without a loader.
++	 */
++	memory@800000000 {
++		device_type = "memory";
++		reg = <0x8 0x0 0x0 0x40000000>; /* To be filled by loader */
++	};
++
++	/*
++	 * Audio topology, as described by Apple's device tree:
++	 *
++	 *   6 far-field mics + 1 internal mic
++	 *        -> 2x Conexant/Synaptics "CX21810" ADC (i2c2 0x3b, 0x35)
++	 *        -> TDM -> MCA2 (capture)
++	 *
++	 *   MCA3 (playback, TDM) -> "Nitrogen" amplifier controller
++	 *        (STM32L051 on the power ring board, control over UART8)
++	 *        -> CS4350 DAC + IR class-D (woofer)
++	 *        -> 7x SSM3515B (tweeters)
++	 *
++	 * The DAC and the eight amplifiers are NOT visible on any SoC bus;
++	 * the STM32 owns them. MCA4 exists in Apple's tree with no consumer.
++	 *
++	 * [NODRV] There is no Linux driver for the A8-generation MCA, for the
++	 * CX21810 or for the Nitrogen protocol, so this card is disabled and
++	 * exists to record the routing.
++	 */
++	sound {
++		compatible = "apple,b238a-audio"; /* placeholder */
++		model = "HomePod";
++		status = "disabled";
++
++		dai-link-mics {
++			link-name = "Microphone array";
++
++			cpu {
++				sound-dai = <&mca2>;
++			};
++
++			codec {
++				sound-dai = <&mic_adc0>, <&mic_adc1>;
++			};
++		};
++
++		dai-link-speakers {
++			link-name = "Speakers";
++
++			cpu {
++				sound-dai = <&mca3>;
++			};
++
++			codec {
++				sound-dai = <&nitrogen>;
++			};
++		};
++	};
++};
++
++/* ------------------------------------------------------------------ */
++/* Debug console                                                       */
++/* ------------------------------------------------------------------ */
++
++&serial0 {
++	status = "okay";
++};
++
++/* ------------------------------------------------------------------ */
++/* I2C0: PMU                                                           */
++/* ------------------------------------------------------------------ */
++
++&i2c0 {
++	status = "okay";
++
++	/*
++	 * [ADT] "pmu,d2186" at 0x74, 2500 (x100 Hz) bus speed.
++	 * IRQ: SoC GPIO 106. keepact: SoC GPIO 107.
++	 * PMU GPIO events: gpio7 "wlan", gpio10 "bluetooth", gpio15 "sense1",
++	 * gpio16 "sense2", gpio17 "nitro".
++	 *
++	 * [GUESS] The node below is copied from the other T7000 boards in the
++	 * HoolockLinux tree (Apple TV HD, iPhone 6, iPod touch 6), which sit
++	 * at the same address. That those boards also use a D2186 has not
++	 * been checked, so the RTC/NVMEM offsets are unverified here.
++	 */
++	pmic@74 {
++		compatible = "apple,adi-pmic", "apple,i2c-pmic";
++		reg = <0x74>;
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		rtc@5c0 {
++			compatible = "apple,adi-pmic-rtc", "apple,amber-pmic-rtc";
++			reg = <0x5c0 0x10>;
++			nvmem-cells = <&rtc_offset>;
++			nvmem-cell-names = "rtc_offset";
++		};
++
++		nvmem@4000 {
++			compatible = "apple,pmic-nvmem";
++			reg = <0x4000 0x28>;
++
++			nvmem-layout {
++				compatible = "fixed-layout";
++				#address-cells = <1>;
++				#size-cells = <1>;
++
++				rtc_offset: rtc-offset@4 {
++					reg = <0x4 0x4>;
++				};
++			};
++		};
++	};
++};
++
++/*
++ * I2C1 is intentionally left disabled. The 11.2.5 device tree has an empty
++ * i2c1 node (no children) and the 18.3 tree drops it completely.
++ */
++
++/* ------------------------------------------------------------------ */
++/* I2C2: microphone ADCs and accelerometer                             */
++/* ------------------------------------------------------------------ */
++
++&i2c2 {
++	status = "okay";
++
++	/*
++	 * [ADT] accelerometer,bma282 at 0x18, "polling-mode" set, interrupt
++	 * routed through the PMU (PMU interrupt 0x26), not a SoC GPIO.
++	 * [DRIVER] bmc150-accel. The BMA282 has no compatible of its own; it
++	 * reports chip ID 0xfb, the BMA280 ID, so bosch,bma280 is used. No
++	 * interrupt is described, so the driver runs without a trigger.
++	 */
++	accelerometer@18 {
++		compatible = "bosch,bma280";
++		reg = <0x18>;
++	};
++
++	/*
++	 * [ADT] audio-control,cx21810 "audio-codec1" at 0x35 (secondary ADC,
++	 * referenced from codec0 through its "codec1" property).
++	 * [NODRV]
++	 */
++	mic_adc1: audio-codec@35 {
++		compatible = "cnxt,cx21810"; /* placeholder */
++		reg = <0x35>;
++		#sound-dai-cells = <0>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] audio-control,cx21810 "audio-codec0" at 0x3b (primary ADC).
++	 * Reset: SoC GPIO 47 (Apple flags 0x10001; polarity is a [GUESS]).
++	 * Carries the SpGa / MiGa SysCfg calibration.
++	 * [NODRV]
++	 */
++	mic_adc0: audio-codec@3b {
++		compatible = "cnxt,cx21810"; /* placeholder */
++		reg = <0x3b>;
++		reset-gpios = <&pinctrl 47 GPIO_ACTIVE_LOW>;
++		#sound-dai-cells = <0>;
++		status = "disabled";
++	};
++};
++
++/* ------------------------------------------------------------------ */
++/* I2C3: ambient light sensor and the top-board ("Peppy") MCU          */
++/* ------------------------------------------------------------------ */
++
++&i2c3 {
++	status = "okay";
++
++	/*
++	 * [ADT] als,ct821 at 0x29, interrupt through the PMU (0x27).
++	 * [NODRV] The vendor behind "ct821" is not identified.
++	 */
++	light-sensor@29 {
++		compatible = "apple,ct821-als"; /* placeholder */
++		reg = <0x29>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] peppy-mcu,1 at 0x55. This is the microcontroller on the top
++	 * board (the Cypress CY8C4245 PSoC in the teardown): it reports the
++	 * capacitive touch surface and drives the 19-zone LED matrix. Apple's
++	 * tree attaches the LED calibration (SysCfg "LEDc"), the LED
++	 * coordinates (MDXCoords/MDYCoords/MDRingCoords, 16-bit depth) and
++	 * the "backlight" LED update hooks to this node.
++	 *
++	 * The TI TLC5971 LED driver hangs off this MCU. It is NOT on a SoC
++	 * SPI bus: Apple's device tree for this board contains no SPI
++	 * controller at all, so no ti,tlc5971 node can be described here.
++	 *
++	 * Reset: PMU GPIO 19. Boot/bootloader select: SoC GPIO 45.
++	 * Interrupt: through the PMU (0x25).
++	 * [NODRV]
++	 */
++	peppy: mcu@55 {
++		compatible = "apple,peppy-mcu"; /* placeholder */
++		reg = <0x55>;
++		boot-gpios = <&pinctrl 45 GPIO_ACTIVE_HIGH>; /* polarity [GUESS] */
++		status = "disabled";
++	};
++};
++
++/* ------------------------------------------------------------------ */
++/* Peripherals that t7000.dtsi does not describe yet                    */
++/* ------------------------------------------------------------------ */
++
++&{/soc} {
++	/*
++	 * [ADT] i2s-switch,t7000: routes the MCA ports to the I2S pin groups.
++	 * [NODRV]
++	 */
++	i2s_switch: audio-mux@20a003000 {
++		compatible = "apple,t7000-i2s-switch"; /* placeholder */
++		reg = <0x2 0x0a003000 0x0 0x1000>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] mca,t7000 / mca,s5l8950x. This is the pre-M1 MCA: one
++	 * register block per port and DMA through the SIO coprocessor, not
++	 * ADMAC. The mainline "apple,mca" driver does not handle it.
++	 * MCLK comes from NCO channel 2/3/4.
++	 * [NODRV]
++	 */
++	mca2: i2s@20a0a8000 {
++		compatible = "apple,t7000-mca"; /* placeholder */
++		reg = <0x2 0x0a0a8000 0x0 0x4000>,
++		      <0x2 0x0a002008 0x0 0x4>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 171 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&ps_mca2>;
++		/* SIO DMA channels 0x2c (tx) / 0x2d (rx) */
++		#sound-dai-cells = <0>;
++		status = "disabled";
++	};
++
++	mca3: i2s@20a0ac000 {
++		compatible = "apple,t7000-mca"; /* placeholder */
++		reg = <0x2 0x0a0ac000 0x0 0x4000>,
++		      <0x2 0x0a00200c 0x0 0x4>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 172 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&ps_mca3>;
++		/* SIO DMA channels 0x2e (tx) / 0x2f (rx) */
++		#sound-dai-cells = <0>;
++		/* Phase 3: enabled to power on ps_mca3 domain for audio path */
++		status = "okay";
++	};
++
++	mca4: i2s@20a0b0000 {
++		compatible = "apple,t7000-mca"; /* placeholder */
++		reg = <0x2 0x0a0b0000 0x0 0x4000>,
++		      <0x2 0x0a002010 0x0 0x4>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 173 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&ps_mca4>;
++		/* SIO DMA channels 0x30 (tx) / 0x31 (rx); no consumer in ADT */
++		#sound-dai-cells = <0>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] uart1: Bluetooth HCI, 3,000,000 baud, RTS on SoC GPIO 175,
++	 * TX on SoC GPIO 173.
++	 * [DRIVER] apple,s5l-uart (the port itself). Left disabled because
++	 * the pin mux function for these pads has not been confirmed.
++	 */
++	serial1: serial@20a0c4000 {
++		compatible = "apple,s5l-uart";
++		reg = <0x2 0x0a0c4000 0x0 0x4000>;
++		reg-io-width = <4>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 159 IRQ_TYPE_LEVEL_HIGH>;
++		/* Use the bootloader-enabled clocks for now. */
++		clocks = <&clkref>, <&clkref>;
++		clock-names = "uart", "clk_uart_baud0";
++		power-domains = <&ps_uart1>;
++		/*
++		 * Enabled so /dev/ttySAC1 exists for Bluetooth bring-up from
++		 * userspace. The pad mux for GPIO 173-176 is still unconfirmed.
++		 */
++		status = "okay";
++
++		/*
++		 * [ADT] "bluetooth,n88": the Bluetooth half of the BCM4357
++		 * combo chip. Wake: SoC GPIO 200. Power enable: PMU GPIO 4.
++		 * Host wake arrives as PMU event gpio10.
++		 * No compatible is given on purpose: no Linux Bluetooth
++		 * driver is known to support this chip, and without one the
++		 * node is ignored. It exists so the loader has somewhere to
++		 * put the MAC address (alias bluetooth0).
++		 */
++		bluetooth: bluetooth {
++			/* samsung_tty tops out at 24 MHz / 16 on this port */
++			max-speed = <1500000>;
++			device-wakeup-gpios = <&pinctrl 200 GPIO_ACTIVE_HIGH>;
++			local-bd-address = [00 00 00 00 00 00]; /* To be filled by loader */
++		};
++	};
++
++	/*
++	 * [ADT] uart3: Wi-Fi sideband/debug UART of the BCM4357
++	 * ("wlan-pcie-uart,bcm4357"). RTS SoC GPIO 180, TX SoC GPIO 178.
++	 * [DRIVER] apple,s5l-uart; disabled, pin mux unconfirmed.
++	 */
++	serial3: serial@20a0cc000 {
++		compatible = "apple,s5l-uart";
++		reg = <0x2 0x0a0cc000 0x0 0x4000>;
++		reg-io-width = <4>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 161 IRQ_TYPE_LEVEL_HIGH>;
++		/* Use the bootloader-enabled clocks for now. */
++		clocks = <&clkref>, <&clkref>;
++		clock-names = "uart", "clk_uart_baud0";
++		power-domains = <&ps_uart3>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] uart8: control link to the amplifier controller, no flow
++	 * control, TX on SoC GPIO 58.
++	 * [DRIVER] apple,s5l-uart — ENABLED in Phase 3. Gives a raw tty
++	 * (/dev/ttySAC8) to the Nitrogen STM32 MCU for protocol work.
++	 */
++	serial8: serial@20a0e0000 {
++		compatible = "apple,s5l-uart";
++		reg = <0x2 0x0a0e0000 0x0 0x4000>;
++		reg-io-width = <4>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 166 IRQ_TYPE_LEVEL_HIGH>;
++		/* Use the bootloader-enabled clocks for now. */
++		clocks = <&clkref>, <&clkref>;
++		clock-names = "uart", "clk_uart_baud0";
++		power-domains = <&ps_uart8>;
++		status = "okay";
++
++		/*
++		 * [ADT] "aeac-mcu,1" with child "audio-control,nitrogen":
++		 * the STM32L051 on the power ring board. It owns the CS4350
++		 * DAC, the IR woofer amplifier, the seven SSM3515B tweeter
++		 * amplifiers and thermal/current protection, and receives
++		 * audio as TDM from MCA3.
++		 *
++		 *   reset         PMU GPIO 20
++		 *   prog          SoC GPIO 76  (bootloader entry)
++		 *   nitro_buf_en  SoC GPIO 67  (level shifter/buffer enable)
++		 *   clock         PWM "lfosc-clk", 360 kHz default
++		 *   event         PMU gpio17 "nitro"
++		 *   calibration   SysCfg WFEQ, SpEQ
++		 *
++		 * The SSM3515B amplifiers are behind this MCU and are NOT
++		 * reachable from any SoC I2C bus, so there are no adi,ssm3515
++		 * nodes in this file. (The part only has four selectable I2C
++		 * addresses, so seven of them could not share one bus anyway.)
++		 * [NODRV]
++		 */
++		nitrogen: audio-controller {
++			compatible = "apple,nitrogen-amp"; /* placeholder */
++			prog-gpios = <&pinctrl 76 GPIO_ACTIVE_HIGH>; /* polarity [GUESS] */
++			enable-gpios = <&pinctrl 67 GPIO_ACTIVE_HIGH>; /* polarity [GUESS] */
++			#sound-dai-cells = <0>;
++			status = "disabled";
++		};
++	};
++
++	/*
++	 * [ADT] pwm,t7000: provides the low-frequency oscillator clock
++	 * (default 360000 Hz) that Apple enables for the amplifier MCU.
++	 * [NODRV]
++	 */
++	pwm: pwm@20a118000 {
++		compatible = "apple,t7000-pwm"; /* placeholder */
++		reg = <0x2 0x0a118000 0x0 0x1000>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 178 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&ps_pwm0>;
++		/* Phase 3: enabled to power on ps_pwm0 for 360kHz Nitrogen MCU clock */
++		status = "okay";
++	};
++
++	/*
++	 * [ADT] SIO coprocessor ("iop,s5l8960x", role SIO). Provides the DMA
++	 * service used by the MCA ports and by uart1/uart3. Needs firmware
++	 * (SmartIOFirmwareT7000) loaded before it does anything.
++	 * [NODRV]
++	 */
++	sio: sio@20ae00000 {
++		compatible = "apple,t7000-sio"; /* placeholder */
++		reg = <0x2 0x0ae00000 0x0 0x2000>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 149 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 148 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 151 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 150 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&ps_sio>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] ANS storage coprocessor ("iop,s5l8960x", role ANS) in front
++	 * of the 16 GB Toshiba NAND. The node itself (block@208040000,
++	 * "apple,t7000-ans") and its AKF mailbox (mbox@208041000) come from
++	 * t7000.dtsi and are enabled in t7000-common.dtsi; the loader fills
++	 * in the /reserved-memory/ans-firmware region.
++	 * [DRIVER] drivers/block/asp.c (CONFIG_APPLE_ASP)
++	 */
++
++	/*
++	 * [ADT] Secure Enclave ("iop,s5l8960x", role SEP).
++	 * Deliberately disabled and deliberately NOT given a "sep" alias, so
++	 * neither the loader nor the kernel will touch it.
++	 */
++	sep: sep@20da00000 {
++		compatible = "apple,t7000-sep", "apple,sep"; /* placeholder */
++		reg = <0x2 0x0da00000 0x0 0x2000>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 98 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 97 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 100 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 99 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&ps_sep>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] nco,t7000: numerically controlled oscillators that generate
++	 * the MCA master clocks.
++	 * [NODRV] Register compatibility with apple,nco (M1) is untested.
++	 */
++	nco: clock-controller@20e011000 {
++		compatible = "apple,t7000-nco"; /* placeholder */
++		reg = <0x2 0x0e011000 0x0 0x5000>;
++		clocks = <&clkref>;
++		#clock-cells = <1>;
++		status = "disabled";
++	};
++
++	/*
++	 * [ADT] dart-apcie1: dart,t7000 / dart,s5l8960x for PCIe port 1, one
++	 * stream (SID 0, "mapper-apcie1"). 4K pages, Apple's IOVA window is
++	 * 0x80000000 + 0x3ffff000 (see dma-ranges in the host bridge below).
++	 * [DRIVER] apple,s5l8960x-dart. Untested behind PCIe on this SoC.
++	 */
++	pcie_dart: iommu@602002000 {
++		compatible = "apple,t7000-dart", "apple,s5l8960x-dart";
++		reg = <0x6 0x02002000 0x0 0x2000>;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 216 IRQ_TYPE_LEVEL_HIGH>;
++		power-domains = <&ps_pcie>;
++		#iommu-cells = <1>;
++		status = "okay";
++	};
++
++	/*
++	 * [ADT] apcie,t7000: two-port PCIe root complex. Only port 1 is
++	 * populated on this board, by the Wi-Fi chip. 32 MSI vectors
++	 * starting at AIC 224 (Apple gives port 1 eight of them, from 8).
++	 *   port 1 PERST#   SoC GPIO 77
++	 *   port 1 CLKREQ#  SoC GPIO 41
++	 *   port 1 wake     SoC GPIO 43
++	 *   Wi-Fi REG_ON    PMU GPIO 5
++	 *   Wi-Fi host wake SoC GPIO 81
++	 * Link is limited to Gen1 (maximum-link-speed = 1).
++	 *
++	 * [DRIVER] pcie-apple.c, "apple,t7000-pcie". The register blocks were
++	 * identified from AppleT7000PCIe (see t7000-pcie-re.md). Apple's reg
++	 * order is config, port0, mmu0, port1, mmu1, common, phy0; it is
++	 * reordered here so that index 1 is the common block, which is where
++	 * the driver expects "rc".
++	 *
++	 *   rc     common block: per-port clocks and reset, PHY clock
++	 *   portN  per-port block: LTSSM, link status, interrupts, MSI
++	 *   phy0   PHY shared by ports 0 and 1
++	 *   mmuN   per-port "MMU" block, only read for error reporting
++	 *
++	 * Interrupts are per port (212 = port 0, 215 = port 1).
++	 */
++	pcie: pcie@610000000 {
++		compatible = "apple,t7000-pcie";
++		device_type = "pci";
++		reg = <0x6 0x10000000 0x0 0x1000000>,
++		      <0x6 0x00000000 0x0 0x2000>,
++		      <0x6 0x01004000 0x0 0x1000>,
++		      <0x6 0x02004000 0x0 0x1000>,
++		      <0x6 0x01005000 0x0 0x1000>,
++		      <0x6 0x01001000 0x0 0x1000>,
++		      <0x6 0x02001000 0x0 0x1000>;
++		reg-names = "config", "rc", "port0", "port1", "phy0",
++			    "mmu0", "mmu1";
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 212 IRQ_TYPE_LEVEL_HIGH>,
++			     <AIC_IRQ 215 IRQ_TYPE_LEVEL_HIGH>;
++		/* [ADT] msi-vector-offset 224, #msi-vectors 32 */
++		msi-controller;
++		msi-parent = <&pcie>;
++		msi-ranges = <&aic AIC_IRQ 224 IRQ_TYPE_EDGE_RISING 32>;
++		/* [ADT] wlan iommu-parent = mapper-apcie1, SID 0 */
++		iommu-map = <0x100 &pcie_dart 0 1>;
++		iommu-map-mask = <0xff00>;
++		/*
++		 * pcie -> pcie_aux -> pcie_ref, chained at the bottom of this
++		 * file. Apple lists all three as clock gates of this node.
++		 */
++		power-domains = <&ps_pcie>;
++		bus-range = <0 8>;
++		#address-cells = <3>;
++		#size-cells = <2>;
++		ranges = <0x43000000 0x6 0x20000000 0x6 0x20000000 0x1 0xa0000000>,
++			 <0x02000000 0x0 0xc0000000 0x7 0xc0000000 0x0 0x40000000>;
++		/*
++		 * [ADT] dart-apcie1 vm-offset = 0x80000000, vm-size = 0x3ffff000.
++		 * The firmware uses bus [0x80000000,0xBFFFF000) but the kernel
++		 * IOVA space starts at 0.  iBoot's hardware inbound window
++		 * should already accept 0x80000000 addresses.  dma-ranges stays
++		 * at [0, 0x3FFFF000] for the IOMMU to work; the brcmfmac
++		 * driver ORs 0x80000000 onto DMA addresses for the firmware.
++		 */
++		dma-ranges = <0x42000000 0x0 0x00000000 0x0 0x00000000 0x0 0x3ffff000>;
++		max-link-speed = <1>;
++		/* [ADT] phy0-settings: <offset value> */
++		apple,phy-settings = <0xc24 0x3f>, <0xc28 0x3f>;
++		/* [ADT] apcie-config-tunables: <offset mask value> */
++		apple,port-tunables = <0x090 0xff 0x28>,
++				      <0x130 0x03 0x03>,
++				      <0x134 0x01 0x01>;
++		status = "okay";
++
++		port01: pci@1,0 {
++			device_type = "pci";
++			reg = <0x800 0x0 0x0 0x0 0x0>;
++			bus-range = <1 1>;
++			reset-gpios = <&pinctrl 77 GPIO_ACTIVE_LOW>;
++			wake-gpios = <&pinctrl 43 GPIO_ACTIVE_LOW>; /* polarity [GUESS] */
++			max-link-speed = <1>;
++			/* [ADT] t-refclk-to-perst = 100 */
++			apple,t-refclk-to-perst-us = <100>;
++			#address-cells = <3>;
++			#size-cells = <2>;
++			ranges;
++
++			interrupt-controller;
++			#interrupt-cells = <1>;
++			interrupt-map-mask = <0 0 0 7>;
++			interrupt-map = <0 0 0 1 &port01 0 0 0 0>,
++					<0 0 0 2 &port01 0 0 0 1>,
++					<0 0 0 3 &port01 0 0 0 2>,
++					<0 0 0 4 &port01 0 0 0 3>;
++
++			/*
++			 * [ADT] "wlan-pcie,bcm4357", /product wifi-chipset =
++			 * "4357", module-instance "crush". This is inside the
++			 * USI 339S00450 module. brcmfmac has no BCM4357
++			 * support, and the PCI device ID has not been read
++			 * from hardware, so no compatible is given.
++			 */
++			wifi: wifi@0,0 {
++				compatible = "pci14e4,440a", "brcm,bcm4329-fmac";
++				reg = <0x10000 0x0 0x0 0x0 0x0>;
++				brcm,board-type = "apple,crush";
++				/* apple,antenna-sku removed: firmware files lack the -XX suffix */
++				/* To be filled by loader */
++				local-mac-address = [00 00 00 00 00 00];
++			};
++		};
++	};
++};
++
++/*
++ * Not described on purpose:
++ *
++ *  - CPU operating points above 1128 MHz. iBoot fills in the voltage table
++ *    at boot and it has not been read on this board, so typhoon_opp06
++ *    (1392 MHz) stays disabled until that is checked.
++ *  - USB. The HoolockLinux t7000.dtsi already describes the DWC2 device
++ *    controller and its PHY in peripheral mode, which is what the debug
++ *    connector provides; nothing board-specific is needed. Apple's tree also
++ *    lists an EHCI/OHCI host port with a port node, use unknown.
++ *  - A framebuffer. The board has no display controller in use.
++ *  - SPI. There is no SPI controller in Apple's device tree for this board.
++ */
++
++/*
++ * [ADT] apcie clock-gates = PCIE, PCIE_AUX, PCIE_REF. The pmgr dtsi has no
++ * dependencies between them, so chain them here; the host bridge and its
++ * DART then only need ps_pcie.
++ */
++&ps_pcie {
++	power-domains = <&ps_pcie_aux>;
++};
++
++&ps_pcie_aux {
++	power-domains = <&ps_pcie_ref>;
++};
+diff --git a/drivers/iommu/apple-dart.c b/drivers/iommu/apple-dart.c
+index 85311e95f..9d9598edb 100644
+--- a/drivers/iommu/apple-dart.c
++++ b/drivers/iommu/apple-dart.c
+@@ -14,6 +14,7 @@
+ #include <linux/atomic.h>
+ #include <linux/bitfield.h>
+ #include <linux/clk.h>
++#include <linux/debugfs.h>
+ #include <linux/dev_printk.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
+@@ -29,8 +30,12 @@
+ #include <linux/of_platform.h>
+ #include <linux/pci.h>
+ #include <linux/platform_device.h>
++#include <linux/sched.h>
++#include <linux/seq_file.h>
+ #include <linux/slab.h>
+ #include <linux/swab.h>
++#include <linux/timekeeping.h>
++#include <linux/timer.h>
+ #include <linux/types.h>
+ 
+ #include "dma-iommu.h"
+@@ -334,6 +339,376 @@ struct apple_dart_master_cfg {
+ 	     stream_map = &(base)->stream_maps[++i])
+ 
+ static struct platform_driver apple_dart_driver;
++
++/*
++ * ---------------------------------------------------------------------------
++ * s5l8960x (T7000/A8 PCIe DART) diagnostics and experiment switches.
++ *
++ * WiFi on the HomePod (BCM4357 behind this DART) stops receiving after some
++ * traffic.  At some of those stalls the register at +0x1c holds a new address
++ * inside an ordinary buffer page and +0x10 reads 0x100 or 0x500; the fault
++ * interrupt has never fired.  Nobody knows yet what those two registers
++ * really latch, so this code does not interpret them: it watches them,
++ * and when they change it records what the page tables and the recent
++ * map/unmap history looked like at that moment.
++ *
++ * Everything is reachable at run time:
++ *   /sys/kernel/debug/apple-dart-s5l/{stats,events,history}
++ *   /sys/module/apple_dart/parameters/s5l_*   (also apple_dart.s5l_*= on the
++ *   kernel command line)
++ * ---------------------------------------------------------------------------
++ */
++static bool s5l_inval_on_map = true;
++module_param(s5l_inval_on_map, bool, 0644);
++MODULE_PARM_DESC(s5l_inval_on_map, "s5l8960x: invalidate the TLB after every map (default 1); 0 = only on unmap");
++
++static bool s5l_inval_secondary;
++module_param(s5l_inval_secondary, bool, 0644);
++MODULE_PARM_DESC(s5l_inval_secondary, "s5l8960x: also send the invalidate command to the block at base+0x2000 (only if it reports PARAMS != 0)");
++
++static bool s5l_force_rw;
++module_param(s5l_force_rw, bool, 0644);
++MODULE_PARM_DESC(s5l_force_rw, "s5l8960x: map every page read+write, whatever the DMA direction");
++
++static bool s5l_fault_clear;
++module_param(s5l_fault_clear, bool, 0644);
++MODULE_PARM_DESC(s5l_fault_clear, "s5l8960x: write the status back to +0x10 after an event (write-one-to-clear guess; default 0 = never write)");
++
++static unsigned int s5l_monitor_ms = 20;
++module_param(s5l_monitor_ms, uint, 0644);
++MODULE_PARM_DESC(s5l_monitor_ms, "s5l8960x: poll period of the +0x10/+0x1c monitor in ms (0 = off)");
++
++static unsigned int s5l_console = 8;
++module_param(s5l_console, uint, 0644);
++MODULE_PARM_DESC(s5l_console, "s5l8960x: how many events may still be printed to the kernel log (2 lines each)");
++
++#define S5L_HIST	256
++#define S5L_NREPORT	8
++#define S5L_REPORT_SZ	3072
++#define S5L_TRACK_PAGES	4096		/* IOVA pages below 16 MB */
++
++struct s5l_op {
++	u64 t_ns;
++	u64 paddr;
++	u32 iova;
++	u16 pages;
++	u8 unmap;
++	u8 prot;
++	u8 cpu;
++	char comm[11];
++};
++
++static struct {
++	spinlock_t lock;
++	struct apple_dart *dart;
++	struct apple_dart_domain *domain;
++	void __iomem *sec;			/* block at base + 0x2000 */
++	u32 sec_params;
++	struct timer_list timer;
++	bool timer_on;
++	u32 last_err, last_addr;
++	bool have_last;
++
++	struct s5l_op hist[S5L_HIST];
++	unsigned int head;
++	DECLARE_BITMAP(mapped, S5L_TRACK_PAGES);
++	u64 maps, unmaps, map_pages, unmap_pages, invals, invals_skipped, events;
++	long cur_pages, peak_pages;
++	u32 lowest_iova, highest_iova;
++	u64 last_inval_ns, last_map_ns, last_unmap_ns;
++
++	char *report[S5L_NREPORT];
++	unsigned int nreport;
++	struct dentry *dbg;
++} s5l = {
++	.lock = __SPIN_LOCK_UNLOCKED(s5l.lock),
++	.lowest_iova = 0xffffffff,
++};
++
++static unsigned long s5l_aperture_end = 0x00FFA000;
++
++static int s5l_aperture_end_set(const char *val, const struct kernel_param *kp)
++{
++	unsigned long v;
++	int ret = kstrtoul(val, 0, &v);
++
++	if (ret)
++		return ret;
++	if (v < 0x00400000 || v > 0x00FFAFFF)
++		return -ERANGE;
++	s5l_aperture_end = v;
++	if (s5l.domain)
++		s5l.domain->domain.geometry.aperture_end = v;
++	return 0;
++}
++
++static const struct kernel_param_ops s5l_aperture_end_ops = {
++	.set = s5l_aperture_end_set,
++	.get = param_get_ulong,
++};
++module_param_cb(s5l_aperture_end, &s5l_aperture_end_ops, &s5l_aperture_end, 0644);
++MODULE_PARM_DESC(s5l_aperture_end, "s5l8960x: last usable IOVA (default 0xFFA000, the top page the DAPF lets through); takes effect for new allocations");
++
++u64 apple_dart_pgtable_peek(struct io_pgtable_ops *ops, unsigned long iova);
++
++static void s5l_note(struct apple_dart_domain *dom, unsigned long iova,
++		     phys_addr_t paddr, size_t bytes, int prot, bool unmap)
++{
++	unsigned long flags, pfn = iova >> 12, n = bytes >> 12, i;
++	struct s5l_op *op;
++	u64 now = ktime_get_ns();
++
++	if (!n)
++		return;
++	spin_lock_irqsave(&s5l.lock, flags);
++	op = &s5l.hist[s5l.head++ % S5L_HIST];
++	op->t_ns = now;
++	op->paddr = paddr;
++	op->iova = iova;
++	op->pages = n;
++	op->unmap = unmap;
++	op->prot = prot;
++	op->cpu = raw_smp_processor_id();
++	strscpy(op->comm, current->comm, sizeof(op->comm));
++	for (i = pfn; i < pfn + n && i < S5L_TRACK_PAGES; i++) {
++		if (unmap) {
++			if (__test_and_clear_bit(i, s5l.mapped))
++				s5l.cur_pages--;
++		} else if (!__test_and_set_bit(i, s5l.mapped)) {
++			s5l.cur_pages++;
++		}
++	}
++	if (unmap) {
++		s5l.unmaps++;
++		s5l.unmap_pages += n;
++		s5l.last_unmap_ns = now;
++	} else {
++		s5l.maps++;
++		s5l.map_pages += n;
++		s5l.last_map_ns = now;
++		if (iova < s5l.lowest_iova)
++			s5l.lowest_iova = iova;
++		if (iova + bytes - 1 > s5l.highest_iova)
++			s5l.highest_iova = iova + bytes - 1;
++		if (s5l.cur_pages > s5l.peak_pages)
++			s5l.peak_pages = s5l.cur_pages;
++	}
++	spin_unlock_irqrestore(&s5l.lock, flags);
++}
++
++static int s5l_fmt_op(char *buf, size_t len, const struct s5l_op *op, u64 now)
++{
++	return scnprintf(buf, len,
++			 "    %c iova=%06x pages=%u pa=%09llx prot=%x %8lld us ago cpu%u %s\n",
++			 op->unmap ? 'U' : 'M', op->iova, op->pages, op->paddr,
++			 op->prot, (s64)(now - op->t_ns) / 1000, op->cpu, op->comm);
++}
++
++/* Called with the registers already read; timer (softirq) or irq context. */
++static void s5l_event(u32 err, u32 addr, const char *why)
++{
++	struct apple_dart *dart = s5l.dart;
++	struct io_pgtable_ops *ops = s5l.domain ? s5l.domain->pgtbl_ops : NULL;
++	unsigned long flags, page = addr & ~0xfffUL;
++	u64 now = ktime_get_ns(), pte[3] = { 0, 0, 0 };
++	u32 regs[16], secerr = 0, secaddr = 0;
++	unsigned int i, n, shown;
++	char *r;
++	int o = 0, k;
++	bool mapped_now;
++
++	for (i = 0; i < 16; i++)
++		regs[i] = readl(dart->regs + 4 * i);
++	if (s5l.sec && s5l.sec_params) {
++		secerr = readl(s5l.sec + DART_S5L8960X_ERROR);
++		secaddr = readl(s5l.sec + DART_S5L8960X_ERROR_ADDR);
++	}
++	if (ops) {
++		if (page >= 0x1000)
++			pte[0] = apple_dart_pgtable_peek(ops, page - 0x1000);
++		pte[1] = apple_dart_pgtable_peek(ops, page);
++		pte[2] = apple_dart_pgtable_peek(ops, page + 0x1000);
++	}
++
++	spin_lock_irqsave(&s5l.lock, flags);
++	s5l.events++;
++	n = s5l.events;
++	mapped_now = (page >> 12) < S5L_TRACK_PAGES && test_bit(page >> 12, s5l.mapped);
++	r = s5l.report[(n - 1) % S5L_NREPORT];
++	if (r) {
++		o += scnprintf(r + o, S5L_REPORT_SZ - o,
++			       "event %u (%s) at %llu.%06llu s: +0x10=%08x +0x1c=%08x (before: %08x %08x)\n",
++			       n, why, now / NSEC_PER_SEC, (now % NSEC_PER_SEC) / 1000,
++			       err, addr, s5l.last_err, s5l.last_addr);
++		o += scnprintf(r + o, S5L_REPORT_SZ - o, "  regs 00..3c:");
++		for (i = 0; i < 16; i++)
++			o += scnprintf(r + o, S5L_REPORT_SZ - o, " %08x", regs[i]);
++		o += scnprintf(r + o, S5L_REPORT_SZ - o,
++			       "\n  block+0x2000: params=%08x +0x10=%08x +0x1c=%08x\n",
++			       s5l.sec_params, secerr, secaddr);
++		o += scnprintf(r + o, S5L_REPORT_SZ - o,
++			       "  page %06lx: pte=%llx (page below %llx, page above %llx) tracked as %s\n",
++			       page, pte[1], pte[0], pte[2], mapped_now ? "MAPPED" : "not mapped");
++		o += scnprintf(r + o, S5L_REPORT_SZ - o,
++			       "  since last: invalidate %lld us, map %lld us, unmap %lld us; maps=%llu unmaps=%llu invalidates=%llu (skipped %llu) mapped pages now=%ld peak=%ld\n",
++			       (s64)(now - s5l.last_inval_ns) / 1000,
++			       (s64)(now - s5l.last_map_ns) / 1000,
++			       (s64)(now - s5l.last_unmap_ns) / 1000,
++			       s5l.maps, s5l.unmaps, s5l.invals, s5l.invals_skipped,
++			       s5l.cur_pages, s5l.peak_pages);
++		o += scnprintf(r + o, S5L_REPORT_SZ - o,
++			       "  history of this page and its neighbours, newest first:\n");
++		shown = 0;
++		for (k = 0; k < S5L_HIST && shown < 16; k++) {
++			const struct s5l_op *op = &s5l.hist[(s5l.head - 1 - k) % S5L_HIST];
++
++			if (!op->t_ns || k >= s5l.head)
++				break;
++			if (op->iova + ((u32)op->pages << 12) <= (page >= 0x1000 ? page - 0x1000 : 0) ||
++			    op->iova > page + 0x1000)
++				continue;
++			o += s5l_fmt_op(r + o, S5L_REPORT_SZ - o, op, now);
++			shown++;
++		}
++		if (!shown)
++			o += scnprintf(r + o, S5L_REPORT_SZ - o,
++				       "    (none in the last %d operations)\n", S5L_HIST);
++		o += scnprintf(r + o, S5L_REPORT_SZ - o, "  last operations overall, newest first:\n");
++		for (k = 0; k < 6 && k < s5l.head; k++)
++			o += s5l_fmt_op(r + o, S5L_REPORT_SZ - o,
++					&s5l.hist[(s5l.head - 1 - k) % S5L_HIST], now);
++	}
++	s5l.last_err = err;
++	s5l.last_addr = addr;
++	spin_unlock_irqrestore(&s5l.lock, flags);
++
++	if (s5l_console) {
++		s5l_console--;
++		pr_warn("dart-s5l: event %u (%s): +0x10=%08x +0x1c=%08x page %06lx pte=%llx %s\n",
++			n, why, err, addr, page, pte[1],
++			mapped_now ? "mapped" : "NOT mapped");
++		pr_warn("dart-s5l:   %lld us after an invalidate, %lld us after a map, %lld us after an unmap; details: /sys/kernel/debug/apple-dart-s5l/events\n",
++			(s64)(now - s5l.last_inval_ns) / 1000,
++			(s64)(now - s5l.last_map_ns) / 1000,
++			(s64)(now - s5l.last_unmap_ns) / 1000);
++	}
++
++	if (s5l_fault_clear)
++		writel(err, dart->regs + DART_S5L8960X_ERROR);
++}
++
++static void s5l_monitor_fn(struct timer_list *t)
++{
++	struct apple_dart *dart = s5l.dart;
++	u32 err, addr;
++
++	if (!dart)
++		return;
++	if (s5l_monitor_ms) {
++		err = readl(dart->regs + DART_S5L8960X_ERROR);
++		addr = readl(dart->regs + DART_S5L8960X_ERROR_ADDR);
++		if (!s5l.have_last) {
++			s5l.last_err = err;
++			s5l.last_addr = addr;
++			s5l.have_last = true;
++		} else if (err != s5l.last_err || addr != s5l.last_addr) {
++			s5l_event(err, addr, "poll");
++		}
++	}
++	mod_timer(&s5l.timer, jiffies + msecs_to_jiffies(s5l_monitor_ms ? max(s5l_monitor_ms, 5u) : 250));
++}
++
++static int s5l_stats_show(struct seq_file *m, void *v)
++{
++	struct apple_dart *dart = s5l.dart;
++	unsigned long flags;
++	int i;
++
++	if (!dart)
++		return 0;
++	spin_lock_irqsave(&s5l.lock, flags);
++	seq_printf(m, "maps %llu (%llu pages)\nunmaps %llu (%llu pages)\n",
++		   s5l.maps, s5l.map_pages, s5l.unmaps, s5l.unmap_pages);
++	seq_printf(m, "invalidates %llu\ninvalidates_skipped_on_map %llu\nevents %llu\n",
++		   s5l.invals, s5l.invals_skipped, s5l.events);
++	seq_printf(m, "mapped_pages_now %ld\nmapped_pages_peak %ld\n",
++		   s5l.cur_pages, s5l.peak_pages);
++	seq_printf(m, "lowest_iova 0x%x\nhighest_iova 0x%x\n",
++		   s5l.lowest_iova, s5l.highest_iova);
++	seq_printf(m, "last_status 0x%08x\nlast_addr 0x%08x\n", s5l.last_err, s5l.last_addr);
++	spin_unlock_irqrestore(&s5l.lock, flags);
++	seq_printf(m, "aperture 0x%llx..0x%llx\n",
++		   s5l.domain ? (u64)s5l.domain->domain.geometry.aperture_start : 0,
++		   s5l.domain ? (u64)s5l.domain->domain.geometry.aperture_end : 0);
++	seq_printf(m, "switches inval_on_map=%d inval_secondary=%d force_rw=%d fault_clear=%d monitor_ms=%u console=%u\n",
++		   s5l_inval_on_map, s5l_inval_secondary, s5l_force_rw,
++		   s5l_fault_clear, s5l_monitor_ms, s5l_console);
++	seq_printf(m, "block+0x2000 params 0x%08x%s\n", s5l.sec_params,
++		   s5l.sec_params ? "" : " (reads 0: nothing there to configure or invalidate)");
++	seq_puts(m, "regs 00..3c:");
++	for (i = 0; i < 16; i++)
++		seq_printf(m, " %08x", readl(dart->regs + 4 * i));
++	seq_putc(m, '\n');
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(s5l_stats);
++
++static int s5l_events_show(struct seq_file *m, void *v)
++{
++	unsigned int n = s5l.events, first = n > S5L_NREPORT ? n - S5L_NREPORT : 0, i;
++
++	seq_printf(m, "%u event(s) so far; the last %d are kept\n", n, S5L_NREPORT);
++	for (i = first; i < n; i++)
++		if (s5l.report[i % S5L_NREPORT])
++			seq_puts(m, s5l.report[i % S5L_NREPORT]);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(s5l_events);
++
++static int s5l_history_show(struct seq_file *m, void *v)
++{
++	struct s5l_op *copy = kmalloc_array(S5L_HIST, sizeof(*copy), GFP_KERNEL);
++	unsigned long flags;
++	unsigned int head, k;
++	u64 now = ktime_get_ns();
++	char line[160];
++
++	if (!copy)
++		return -ENOMEM;
++	spin_lock_irqsave(&s5l.lock, flags);
++	memcpy(copy, s5l.hist, sizeof(s5l.hist));
++	head = s5l.head;
++	spin_unlock_irqrestore(&s5l.lock, flags);
++	seq_puts(m, "newest first; M = map, U = unmap\n");
++	for (k = 0; k < S5L_HIST && k < head; k++) {
++		s5l_fmt_op(line, sizeof(line), &copy[(head - 1 - k) % S5L_HIST], now);
++		seq_puts(m, line);
++	}
++	kfree(copy);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(s5l_history);
++
++static void s5l_monitor_start(struct apple_dart *dart, struct apple_dart_domain *dom)
++{
++	int i;
++
++	if (s5l.dart)
++		return;
++	for (i = 0; i < S5L_NREPORT; i++)
++		s5l.report[i] = kzalloc(S5L_REPORT_SZ, GFP_KERNEL);
++	s5l.domain = dom;
++	s5l.dart = dart;
++	s5l.dbg = debugfs_create_dir("apple-dart-s5l", NULL);
++	debugfs_create_file("stats", 0444, s5l.dbg, NULL, &s5l_stats_fops);
++	debugfs_create_file("events", 0444, s5l.dbg, NULL, &s5l_events_fops);
++	debugfs_create_file("history", 0444, s5l.dbg, NULL, &s5l_history_fops);
++	timer_setup(&s5l.timer, s5l_monitor_fn, 0);
++	mod_timer(&s5l.timer, jiffies + msecs_to_jiffies(100));
++	s5l.timer_on = true;
++}
++
++
+ static const struct iommu_ops apple_dart_iommu_ops;
+ 
+ static struct apple_dart_domain *to_dart_domain(struct iommu_domain *dom)
+@@ -541,8 +916,23 @@ apple_dart_t8110_hw_tlb_command(struct apple_dart_stream_map *stream_map,
+ static int
+ apple_dart_s5l8960x_hw_invalidate_tlb(struct apple_dart_stream_map *stream_map)
+ {
+-	return apple_dart_s5l8960x_hw_stream_command(
++	int ret = apple_dart_s5l8960x_hw_stream_command(
+ 		stream_map, DART_S5L8960X_STREAM_COMMAND_INVALIDATE);
++
++	s5l.invals++;
++	s5l.last_inval_ns = ktime_get_ns();
++
++	/*
++	 * Experiment: the block at base+0x2000 was once taken for a second
++	 * MMU.  On the HomePod it reads PARAMS = 0 and is left alone at
++	 * setup, so this only does something on hardware where it answers.
++	 */
++	if (s5l_inval_secondary && s5l.sec && s5l.sec_params &&
++	    stream_map->dart == s5l.dart)
++		writel(stream_map->sidmap[0] << DART_S5L8960X_STREAM_COMMAND_SID_SHIFT |
++		       DART_S5L8960X_STREAM_COMMAND_INVALIDATE,
++		       s5l.sec + DART_S5L8960X_STREAM_COMMAND);
++	return ret;
+ }
+ 
+ static int
+@@ -629,7 +1019,14 @@ static void apple_dart_iotlb_sync(struct iommu_domain *domain,
+ static int apple_dart_iotlb_sync_map(struct iommu_domain *domain,
+ 				     unsigned long iova, size_t size)
+ {
+-	apple_dart_domain_flush_tlb(to_dart_domain(domain));
++	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
++
++	/* experiment switch: a new mapping needs no flush if the TLB never caches misses */
++	if (!s5l_inval_on_map && dart_domain == s5l.domain) {
++		s5l.invals_skipped++;
++		return 0;
++	}
++	apple_dart_domain_flush_tlb(dart_domain);
+ 	return 0;
+ }
+ 
+@@ -652,12 +1049,21 @@ static int apple_dart_map_pages(struct iommu_domain *domain, unsigned long iova,
+ {
+ 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
+ 	struct io_pgtable_ops *ops = dart_domain->pgtbl_ops;
++	size_t before = mapped ? *mapped : 0;
++	int ret;
+ 
+ 	if (!ops)
+ 		return -ENODEV;
+ 
+-	return ops->map_pages(ops, iova & dart_domain->mask, paddr, pgsize,
+-			      pgcount, prot, gfp, mapped);
++	if (dart_domain == s5l.domain && s5l_force_rw)
++		prot |= IOMMU_READ | IOMMU_WRITE;
++
++	ret = ops->map_pages(ops, iova & dart_domain->mask, paddr, pgsize,
++			     pgcount, prot, gfp, mapped);
++	if (dart_domain == s5l.domain && mapped && *mapped > before)
++		s5l_note(dart_domain, iova & dart_domain->mask, paddr,
++			 *mapped - before, prot, false);
++	return ret;
+ }
+ 
+ static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
+@@ -667,9 +1073,13 @@ static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
+ {
+ 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
+ 	struct io_pgtable_ops *ops = dart_domain->pgtbl_ops;
++	size_t done;
+ 
+-	return ops->unmap_pages(ops, iova & dart_domain->mask, pgsize, pgcount,
++	done = ops->unmap_pages(ops, iova & dart_domain->mask, pgsize, pgcount,
+ 				gather);
++	if (dart_domain == s5l.domain && done)
++		s5l_note(dart_domain, iova & dart_domain->mask, 0, done, 0, true);
++	return done;
+ }
+ 
+ static void
+@@ -680,15 +1090,79 @@ apple_dart_setup_translation(struct apple_dart_domain *domain,
+ 	struct io_pgtable_cfg *pgtbl_cfg =
+ 		&io_pgtable_ops_to_pgtable(domain->pgtbl_ops)->cfg;
+ 
+-	for (i = 0; i < pgtbl_cfg->apple_dart_cfg.n_ttbrs; ++i)
+-		apple_dart_hw_set_ttbr(stream_map, i,
+-				       pgtbl_cfg->apple_dart_cfg.ttbr[i]);
+-	for (; i < stream_map->dart->hw->ttbr_count; ++i)
+-		apple_dart_hw_clear_ttbr(stream_map, i);
++	if (stream_map->dart->hw->type == DART_S5L8960X) {
++		/*
++		 * On s5l8960x the IOVA mask folds all page-table writes
++		 * into pgd[0] (TTBR0's L1 table), but the hardware still
++		 * selects the TTBR by bits [31:30] of the unmasked IOVA.
++		 * Point every TTBR at the same L1 table so the hardware
++		 * finds the mapping regardless of which TTBR it picks.
++		 */
++		for (i = 0; i < stream_map->dart->hw->ttbr_count; ++i)
++			apple_dart_hw_set_ttbr(stream_map, i,
++					       pgtbl_cfg->apple_dart_cfg.ttbr[0]);
++	} else {
++		for (i = 0; i < pgtbl_cfg->apple_dart_cfg.n_ttbrs; ++i)
++			apple_dart_hw_set_ttbr(stream_map, i,
++					       pgtbl_cfg->apple_dart_cfg.ttbr[i]);
++		for (; i < stream_map->dart->hw->ttbr_count; ++i)
++			apple_dart_hw_clear_ttbr(stream_map, i);
++	}
+ 
+ 	apple_dart_hw_enable_translation(stream_map,
+ 					 pgtbl_cfg->apple_dart_cfg.n_levels);
+ 	stream_map->dart->hw->invalidate_tlb(stream_map);
++
++	/*
++	 * s5l8960x PCIe: there is a second register block 0x2000 above the
++	 * DART.  If it reports PARAMS it is configured like the DART (same
++	 * TTBRs, translation on); on the HomePod it reads 0 and is left
++	 * alone.  Either way the diagnostics start here.
++	 */
++	if (stream_map->dart->hw->type == DART_S5L8960X) {
++		struct apple_dart *dart = stream_map->dart;
++		struct resource *res = dart->dev->of_node ?
++			platform_get_resource(to_platform_device(dart->dev), IORESOURCE_MEM, 0) : NULL;
++
++		if (!s5l.sec && res)
++			s5l.sec = ioremap(res->start + 0x2000, 0x1000);
++		if (s5l.sec) {
++			void __iomem *sec = s5l.sec;
++			u32 sec_params = readl(sec + DART_PARAMS1);
++
++			s5l.sec_params = sec_params == 0xFFFFFFFF ? 0 : sec_params;
++			if (s5l.sec_params) {
++				int sid;
++
++				for_each_set_bit(sid, stream_map->sidmap,
++						 dart->num_streams) {
++					u32 tcr, mask, enable;
++
++					for (i = 0; i < dart->hw->ttbr_count; i++)
++						writel(readl(dart->regs + DART_TTBR(dart, sid, i)),
++						       sec + dart->hw->ttbr + (i << 2));
++					tcr = readl(sec + dart->hw->tcr);
++					mask = 0xFF << (DART_S5L8960X_TCR_BITS_PER_STREAM * sid);
++					enable = 0x80 << (DART_S5L8960X_TCR_BITS_PER_STREAM * sid);
++					writel((tcr & ~mask) | enable, sec + dart->hw->tcr);
++				}
++				{
++					u32 cmd = DART_S5L8960X_STREAM_COMMAND_INVALIDATE;
++					int sid;
++
++					for_each_set_bit(sid, stream_map->sidmap,
++							 dart->num_streams)
++						cmd |= DART_S5L8960X_STREAM_COMMAND_SELECT(sid);
++					writel(cmd, sec + DART_S5L8960X_STREAM_COMMAND);
++				}
++			}
++		}
++		dev_info(dart->dev, "s5l8960x: tcr=0x%x ttbr0=0x%x, block+0x2000 params=0x%x%s\n",
++			 readl(dart->regs + DART_S5L8960X_TCR),
++			 readl(dart->regs + DART_S5L8960X_TTBR), s5l.sec_params,
++			 s5l.sec_params ? " (mirrored)" : " (not present, left alone)");
++		s5l_monitor_start(dart, domain);
++	}
+ }
+ 
+ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
+@@ -719,7 +1193,19 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
+ 		.pgsize_bitmap = dart->pgsize,
+ 		.ias = ias,
+ 		.oas = dart->oas,
+-		.coherent_walk = 1,
++		/*
++		 * T7000 (s5l8960x) DART is NOT cache-coherent — it reads
++		 * page tables from physical memory, not through the CPU
++		 * cache.  With coherent_walk = true the io-pgtable layer
++		 * skips cache flushes and the DART reads stale zeros.
++		 * Verified by /dev/mem: L3 PTEs are 0 in physical memory
++		 * while the CPU cache holds the correct values.
++		 *
++		 * M1+ (t8020+) DARTs ARE coherent; this only affects
++		 * the s5l8960x path.  io-pgtable-dart.c already has
++		 * dcache_clean_inval_poc calls gated on !coherent_walk.
++		 */
++		.coherent_walk = (dart->hw->type != DART_S5L8960X),
+ 		.iommu_dev = dart->dev,
+ 	};
+ 
+@@ -730,14 +1216,36 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
+ 		goto done;
+ 	}
+ 
+-	if (dart->hw->type == DART_S5L8960X)
+-		dart_domain->mask = ~cfg->dma_min;
+-	else
++	if (dart->hw->type == DART_S5L8960X) {
++		/*
++		 * On s5l8960x (T7000/A8), the PCIe inbound path strips
++		 * bits [31:30] before the DART.  When dma_min is set
++		 * (5-arg iommu-map), use it; otherwise fall back to a
++		 * 30-bit mask so the io-pgtable always uses TTBR0.
++		 */
++		if (cfg->dma_min)
++			dart_domain->mask = ~cfg->dma_min;
++		else
++			dart_domain->mask = DMA_BIT_MASK(30);
++	} else {
+ 		dart_domain->mask = DMA_BIT_MASK(pgtbl_cfg.ias);
++	}
+ 
+ 	dart_domain->domain.pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
+ 	dart_domain->domain.geometry.aperture_start = cfg->dma_min;
+ 	dart_domain->domain.geometry.aperture_end = cfg->dma_max;
++
++	/*
++	 * T7000 PCIe DAPF: the locked DAPF has aperture registers at
++	 * +0x100=0x00202000 (start) and +0x104=0x00FFAFFF (end).
++	 * IOVAs above 0xFFA000 are blocked.  Cap the aperture to stay
++	 * within the DAPF window, with start above 0x202000.
++	 */
++	if (dart->hw->type == DART_S5L8960X) {
++		dart_domain->domain.geometry.aperture_start = 0x00202000;
++		dart_domain->domain.geometry.aperture_end = s5l_aperture_end;
++	}
++
+ 	dart_domain->domain.geometry.force_aperture = true;
+ 
+ 	dart_domain->finalized = true;
+@@ -1188,6 +1696,7 @@ static irqreturn_t apple_dart_s5l8960x_irq(int irq, void *dev)
+ 	u32 error_code = FIELD_GET(DART_S5L8960X_ERROR_CODE, error);
+ 	u32 addr = readl(dart->regs + DART_S5L8960X_ERROR_ADDR);
+ 	u8 stream_idx = FIELD_GET(DART_S5L8960X_ERROR_STREAM, error);
++	u64 dma_min = cfg ? cfg->dma_min : 0;
+ 
+ 	if (!(error & DART_S5L8960X_ERROR_FLAG))
+ 		return IRQ_NONE;
+@@ -1209,7 +1718,10 @@ static irqreturn_t apple_dart_s5l8960x_irq(int irq, void *dev)
+ 	dev_err_ratelimited(
+ 		dart->dev,
+ 		"translation fault: status:0x%x stream:%d code:0x%x (%s) at 0x%llx",
+-		error, stream_idx, error_code, fault_name, addr | cfg->dma_min);
++		error, stream_idx, error_code, fault_name, addr | dma_min);
++
++	if (dart == s5l.dart)
++		s5l_event(error, addr, "irq");
+ 
+ 	writel(error, dart->regs + DART_S5L8960X_ERROR);
+ 	return IRQ_HANDLED;
+@@ -1441,7 +1953,12 @@ static const struct apple_dart_hw apple_dart_hw_s5l8960x = {
+ 	.error = DART_S5L8960X_ERROR,
+ 
+ 	.tcr = DART_S5L8960X_TCR,
+-	.tcr_enabled = DART_T8020_TCR_TRANSLATE_ENABLE,
++	/*
++	 * audioOS sets TCR to 0xF0 (not just 0x80) for the PCIe DART.
++	 * The extra bits [6:4] appear to be required for DMA to pass
++	 * through the locked DAPF co-located at DART+0x2000.
++	 */
++	.tcr_enabled = 0xF0,
+ 	.tcr_disabled = 0,
+ 	.tcr_bypass = 0,
+ 
+diff --git a/drivers/iommu/io-pgtable-dart.c b/drivers/iommu/io-pgtable-dart.c
+index cbc5d6aa2..e0c2b64e1 100644
+--- a/drivers/iommu/io-pgtable-dart.c
++++ b/drivers/iommu/io-pgtable-dart.c
+@@ -21,8 +21,10 @@
+ #include <linux/sizes.h>
+ #include <linux/slab.h>
+ #include <linux/types.h>
++#include <linux/io.h>
+ 
+ #include <asm/barrier.h>
++#include <asm/cacheflush.h>
+ #include "iommu-pages.h"
+ 
+ #define DART1_MAX_ADDR_BITS	36
+@@ -109,6 +111,25 @@ static phys_addr_t iopte_to_paddr(dart_iopte pte,
+ 	return paddr;
+ }
+ 
++/*
++ * Flush page table entries to memory so non-coherent DARTs (e.g. s5l8960x on
++ * T7000/A8) can see them.  On coherent DARTs this is a no-op.
++ */
++static void dart_flush_ptes(struct dart_io_pgtable *data,
++			    dart_iopte *ptep, unsigned int count)
++{
++	if (!data->iop.cfg.coherent_walk)
++		dcache_clean_inval_poc((unsigned long)ptep,
++				      (unsigned long)(ptep + count));
++}
++
++static void dart_flush_page(struct dart_io_pgtable *data, void *page)
++{
++	if (!data->iop.cfg.coherent_walk)
++		dcache_clean_inval_poc((unsigned long)page,
++				      (unsigned long)page + DART_GRANULE(data));
++}
++
+ static int dart_init_pte(struct dart_io_pgtable *data,
+ 			     unsigned long iova, phys_addr_t paddr,
+ 			     dart_iopte prot, int num_entries,
+@@ -125,15 +146,25 @@ static int dart_init_pte(struct dart_io_pgtable *data,
+ 			return -EEXIST;
+ 		}
+ 
+-	/* subpage protection: always allow access to the entire page */
+-	pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_START, 0);
+-	pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_END, 0xfff);
++	/*
++	 * Subpage protection: M1+ DARTs use bits [63:52] and [51:40] for
++	 * subpage start/end within a 16K page.  The s5l8960x (T7000/A8) DART
++	 * predates this feature and treats these bits as reserved — setting
++	 * them causes translation faults.  Skip subpage bits when the DART
++	 * is non-coherent (our indicator for the older s5l8960x hardware).
++	 */
++	if (data->iop.cfg.coherent_walk) {
++		pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_START, 0);
++		pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_END, 0xfff);
++	}
+ 
+ 	pte |= APPLE_DART_PTE_VALID;
+ 
+ 	for (i = 0; i < num_entries; i++)
+ 		ptep[i] = pte | paddr_to_iopte(paddr + i * sz, data);
+ 
++	dart_flush_ptes(data, ptep, num_entries);
++
+ 	return 0;
+ }
+ 
+@@ -144,7 +175,18 @@ static dart_iopte dart_install_table(dart_iopte *table,
+ {
+ 	dart_iopte old, new;
+ 
++	/*
++	 * On s5l8960x (and likely all APPLE_DART1), valid entries require
++	 * state=3 (bits[1:0]=0b11).  Bit 1 is APPLE_DART1_PTE_PROT_SP_DIS
++	 * on M1+ (harmless for table entries).  Without it the DART reports
++	 * "NO PMD FOR IOVA" because state=1 isn't recognised as valid.
++	 */
+ 	new = paddr_to_iopte(__pa(table), data) | APPLE_DART_PTE_VALID;
++	if (data->iop.fmt == APPLE_DART)
++		new |= APPLE_DART1_PTE_PROT_SP_DIS;
++
++	/* Flush the new L2 table (all zeros) before installing its PTE */
++	dart_flush_page(data, table);
+ 
+ 	/*
+ 	 * Ensure the table itself is visible before its PTE can be.
+@@ -155,6 +197,10 @@ static dart_iopte dart_install_table(dart_iopte *table,
+ 
+ 	old = cmpxchg64_relaxed(ptep, curr, new);
+ 
++	/* Flush the L1 entry pointing to the new L2 table */
++	if (!old)
++		dart_flush_ptes(data, ptep, 1);
++
+ 	return old;
+ }
+ 
+@@ -199,12 +245,36 @@ static dart_iopte *dart_get_last(struct dart_io_pgtable *data, unsigned long iov
+ 	return ptep;
+ }
+ 
++/*
++ * Diagnostics for apple-dart.c: the raw leaf PTE currently installed for
++ * @iova (0 if there is no table for it).  Reads the CPU's view; on the
++ * non-coherent s5l8960x DART every write is flushed, so this is also what
++ * the hardware walker reads.
++ */
++u64 apple_dart_pgtable_peek(struct io_pgtable_ops *ops, unsigned long iova);
++u64 apple_dart_pgtable_peek(struct io_pgtable_ops *ops, unsigned long iova)
++{
++	struct dart_io_pgtable *data = io_pgtable_ops_to_data(ops);
++	dart_iopte *ptep = dart_get_last(data, iova);
++
++	if (!ptep)
++		return 0;
++	return READ_ONCE(ptep[dart_get_last_index(data, iova)]);
++}
++EXPORT_SYMBOL_GPL(apple_dart_pgtable_peek);
++
+ static dart_iopte dart_prot_to_pte(struct dart_io_pgtable *data,
+ 					   int prot)
+ {
+ 	dart_iopte pte = 0;
+ 
+ 	if (data->iop.fmt == APPLE_DART) {
++		/*
++		 * Bit 1 serves double duty across DART generations:
++		 *   s5l8960x (A8/T7000): bits[1:0]=0x3 is the "valid" state
++		 *   M1+ (t8103):         bit 1 is SP_DIS (subpage prot disable)
++		 * Either way it must always be set for valid page entries.
++		 */
+ 		pte |= APPLE_DART1_PTE_PROT_SP_DIS;
+ 		if (!(prot & IOMMU_WRITE))
+ 			pte |= APPLE_DART1_PTE_PROT_NO_WRITE;
+@@ -330,6 +400,9 @@ static size_t dart_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
+ 		i++;
+ 	}
+ 
++	/* Flush cleared PTEs so the DART sees them */
++	dart_flush_ptes(data, ptep - i, i);
++
+ 	return i * pgsize;
+ }
+ 
+@@ -411,9 +484,6 @@ apple_dart_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
+ 	struct dart_io_pgtable *data;
+ 	int i;
+ 
+-	if (!cfg->coherent_walk)
+-		return NULL;
+-
+ 	if (cfg->oas != 36 && cfg->oas != 42)
+ 		return NULL;
+ 
+@@ -436,6 +506,8 @@ apple_dart_alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
+ 		if (!data->pgd[i])
+ 			goto out_free_data;
+ 		cfg->apple_dart_cfg.ttbr[i] = virt_to_phys(data->pgd[i]);
++		/* Flush the zeroed L1 table so non-coherent DARTs see it */
++		dart_flush_page(data, data->pgd[i]);
+ 	}
+ 
+ 	return &data->iop;
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h
+index 9371c1489..0f819cba7 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/bus.h
+@@ -177,6 +177,10 @@ struct brcmf_bus {
+ 	uint maxctl;
+ 	u32 chip;
+ 	u32 chiprev;
++	/* OR-ed into every host DMA address handed to the dongle. Apple T7000
++	 * PCIe only accepts inbound bus addresses in [0x80000000, 0xC0000000).
++	 */
++	u64 dma_bus_or;
+ 	enum brcmf_fwvendor fwvid;
+ 	bool always_use_fws_queue;
+ 	bool wowl_supported;
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+index 872c48806..33c6f4ef7 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -6529,6 +6529,18 @@ brcmf_bss_connect_done(struct brcmf_cfg80211_info *cfg,
+ 		conn_params.resp_ie = conn_info->resp_ie;
+ 		conn_params.resp_ie_len = conn_info->resp_ie_len;
+ 		cfg80211_connect_done(ndev, &conn_params, GFP_KERNEL);
++		/* With the 4-way handshake offloaded to firmware, link-up is
++		 * only reported once the firmware supplicant has finished, so
++		 * tell userspace the port is authorized. wpa_supplicant >= 2.11
++		 * waits for this event and otherwise times out after 10 s.
++		 */
++		if (completed &&
++		    (profile->use_fwsup == BRCMF_PROFILE_FWSUP_PSK ||
++		     profile->use_fwsup == BRCMF_PROFILE_FWSUP_SAE)) {
++			cfg80211_port_authorized(ndev, profile->bssid, NULL, 0,
++						 GFP_KERNEL);
++			pr_info("brcmfmac: fw 4-way handshake done, port authorized\n");
++		}
+ 		brcmf_dbg(CONN, "Report connect result - connection %s\n",
+ 			  completed ? "succeeded" : "failed");
+ 	}
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+index 4adc0d0e4..31178e611 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+@@ -738,6 +738,9 @@ static u32 brcmf_chip_tcm_rambase(struct brcmf_chip_priv *ci)
+ 	case BRCM_CC_4364_CHIP_ID:
+ 	case CY_CC_4373_CHIP_ID:
+ 		return 0x160000;
++	case BRCM_CC_4347_CHIP_ID:
++	case BRCM_CC_4357_CHIP_ID:
++	case BRCM_CC_4361_CHIP_ID:
+ 	case BRCM_CC_43751_CHIP_ID:
+ 	case BRCM_CC_43752_CHIP_ID:
+ 	case BRCM_CC_4377_CHIP_ID:
+@@ -1327,9 +1330,12 @@ brcmf_chip_cr4_set_passive(struct brcmf_chip_priv *chip)
+ 
+ 	brcmf_chip_disable_arm(chip, BCMA_CORE_ARM_CR4);
+ 
+-	/* Disable the cores only and let the firmware enable them.
+-	 * Releasing reset ourselves breaks BCM4387 in weird ways.
++	/* BCM4357: no special chip setup — let the firmware handle
++	 * everything. PMU force-on and HT clock requests were tried
++	 * but changed the firmware's heap layout and caused corruption.
+ 	 */
++
++	/* Disable D11 cores — firmware will enable them itself */
+ 	for (i = 0; (core = brcmf_chip_get_d11core(&chip->pub, i)); i++)
+ 		brcmf_chip_coredisable(core, D11_BCMA_IOCTL_PHYRESET |
+ 				       D11_BCMA_IOCTL_PHYCLOCKEN,
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
+index 069ba7016..187f7a104 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
+@@ -11,6 +11,12 @@
+ #include <linux/types.h>
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
++#include <linux/dma-mapping.h>
++#include <linux/gfp.h>
++#include <linux/ktime.h>
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/seq_file.h>
+ 
+ #include <brcmu_utils.h>
+ #include <brcmu_wifi.h>
+@@ -273,6 +279,23 @@ struct brcmf_msgbuf {
+ 	struct work_struct flowring_work;
+ 	spinlock_t flowring_work_lock;
+ 	struct list_head work_queue;
++
++	/* diagnostics, shown by brcmf_msgbuf_dump_state() */
++	struct {
++		u64 rx_cmpl;
++		u64 tx_status;
++		u64 tx_posted;
++		u64 events;
++		u64 ioctl_cmpl;
++		u64 ioctl_timeouts;
++		u64 rx_bad_id;
++		u64 rx_copy_fail;
++		u64 no_pktid;
++		u64 t_rx;
++		u64 t_txs;
++		u64 t_evt;
++		u64 t_ioctl;
++	} hp;
+ };
+ 
+ struct brcmf_msgbuf_pktid {
+@@ -282,13 +305,55 @@ struct brcmf_msgbuf_pktid {
+ 	dma_addr_t physaddr;
+ };
+ 
++/*
++ * Static buffer pool ("brcmfmac.static_rx=1" / "brcmfmac.static_tx=1").
++ *
++ * Instead of one dma_map_single()/dma_unmap_single() per packet (and with it
++ * one IOMMU page-table write plus TLB invalidate each way) the buffers the
++ * dongle reads from or writes to live in a few 64 KiB chunks that are mapped
++ * once when the protocol layer attaches and stay mapped until it detaches.
++ * Packets are copied between the pool and ordinary skbs.  With both switches
++ * on, no IOMMU map or unmap happens at all while traffic flows.
++ */
++#define BRCMF_POOL_CHUNK_SIZE		SZ_64K
++#define BRCMF_POOL_RX_CTL_SLOTS		64
++
++struct brcmf_msgbuf_pool {
++	struct device *dev;
++	enum dma_data_direction dir;
++	u32 slot_size;
++	u32 slots;
++	u32 slots_per_chunk;
++	u32 nr_chunks;
++	struct page **pages;
++	dma_addr_t *dma;
++};
++
+ struct brcmf_msgbuf_pktids {
+ 	u32 array_size;
+ 	u32 last_allocated_idx;
+ 	enum dma_data_direction direction;
+ 	struct brcmf_msgbuf_pktid *array;
++
++	/* static pool mode; pool == NULL means per-packet mapping */
++	struct brcmf_msgbuf_pool *pool;		/* data slots */
++	struct brcmf_msgbuf_pool *ctl_pool;	/* rx only: ids 0..nr_ctl-1 */
++	u32 nr_ctl;
++	u32 last_ctl_idx;
+ };
+ 
++static bool brcmf_static_rx;
++module_param_named(static_rx, brcmf_static_rx, bool, 0644);
++MODULE_PARM_DESC(static_rx, "msgbuf: keep RX/event/ioctl-response buffers in a pool mapped once and copy packets (applied at probe/bind)");
++
++static bool brcmf_static_tx;
++module_param_named(static_tx, brcmf_static_tx, bool, 0644);
++MODULE_PARM_DESC(static_tx, "msgbuf: copy TX payloads into a pool mapped once (applied at probe/bind)");
++
++static unsigned int brcmf_static_tx_slots = 512;
++module_param_named(static_tx_slots, brcmf_static_tx_slots, uint, 0644);
++MODULE_PARM_DESC(static_tx_slots, "msgbuf: number of 2 KiB TX pool slots when static_tx=1 (64..2048)");
++
+ static void brcmf_msgbuf_rxbuf_ioctlresp_post(struct brcmf_msgbuf *msgbuf);
+ 
+ 
+@@ -316,6 +381,143 @@ brcmf_msgbuf_init_pktids(u32 nr_array_entries,
+ }
+ 
+ 
++static void brcmf_msgbuf_pool_destroy(struct brcmf_msgbuf_pool *pool)
++{
++	u32 i;
++
++	if (!pool)
++		return;
++	for (i = 0; i < pool->nr_chunks; i++) {
++		if (!pool->pages[i])
++			continue;
++		if (pool->dma[i])
++			dma_unmap_page(pool->dev, pool->dma[i],
++				       BRCMF_POOL_CHUNK_SIZE, pool->dir);
++		__free_pages(pool->pages[i], get_order(BRCMF_POOL_CHUNK_SIZE));
++	}
++	kfree(pool->pages);
++	kfree(pool->dma);
++	kfree(pool);
++}
++
++static struct brcmf_msgbuf_pool *
++brcmf_msgbuf_pool_create(struct device *dev, u32 slots, u32 slot_size,
++			 enum dma_data_direction dir)
++{
++	struct brcmf_msgbuf_pool *pool;
++	u32 i;
++
++	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
++	if (!pool)
++		return NULL;
++	pool->dev = dev;
++	pool->dir = dir;
++	pool->slot_size = slot_size;
++	pool->slots = slots;
++	pool->slots_per_chunk = BRCMF_POOL_CHUNK_SIZE / slot_size;
++	pool->nr_chunks = DIV_ROUND_UP(slots, pool->slots_per_chunk);
++	pool->pages = kcalloc(pool->nr_chunks, sizeof(*pool->pages),
++			      GFP_KERNEL);
++	pool->dma = kcalloc(pool->nr_chunks, sizeof(*pool->dma), GFP_KERNEL);
++	if (!pool->pages || !pool->dma)
++		goto fail;
++
++	for (i = 0; i < pool->nr_chunks; i++) {
++		pool->pages[i] = alloc_pages(GFP_KERNEL | __GFP_ZERO |
++					     __GFP_NOWARN,
++					     get_order(BRCMF_POOL_CHUNK_SIZE));
++		if (!pool->pages[i])
++			goto fail;
++		pool->dma[i] = dma_map_page(dev, pool->pages[i], 0,
++					    BRCMF_POOL_CHUNK_SIZE, dir);
++		if (dma_mapping_error(dev, pool->dma[i])) {
++			pool->dma[i] = 0;
++			goto fail;
++		}
++	}
++	return pool;
++
++fail:
++	brcmf_msgbuf_pool_destroy(pool);
++	return NULL;
++}
++
++static void *brcmf_msgbuf_pool_slot(struct brcmf_msgbuf_pool *pool, u32 slot,
++				    dma_addr_t *dma)
++{
++	u32 chunk = slot / pool->slots_per_chunk;
++	u32 off = (slot % pool->slots_per_chunk) * pool->slot_size;
++
++	*dma = pool->dma[chunk] + off;
++	return page_address(pool->pages[chunk]) + off;
++}
++
++/* Pool and slot behind a packet id (static pool mode only). */
++static struct brcmf_msgbuf_pool *
++brcmf_msgbuf_pool_of(struct brcmf_msgbuf_pktids *pktids, u32 idx, u32 *slot)
++{
++	if (idx < pktids->nr_ctl) {
++		*slot = idx;
++		return pktids->ctl_pool;
++	}
++	*slot = idx - pktids->nr_ctl;
++	return pktids->pool;
++}
++
++/* Claim a free id in [first, first + nr). */
++static int brcmf_msgbuf_pool_claim(struct brcmf_msgbuf_pktids *pktids,
++				   u32 first, u32 nr, u32 *last, u32 *idx)
++{
++	struct brcmf_msgbuf_pktid *array = pktids->array;
++	u32 count;
++	u32 i = *last;
++
++	for (count = 0; count < nr; count++) {
++		i++;
++		if (i >= first + nr || i < first)
++			i = first;
++		if (array[i].allocated.counter == 0 &&
++		    atomic_cmpxchg(&array[i].allocated, 0, 1) == 0) {
++			*last = i;
++			*idx = i;
++			return 0;
++		}
++	}
++	return -ENOMEM;
++}
++
++/* Static pool mode: hand out an RX buffer the dongle may write to. */
++static int brcmf_msgbuf_pool_rx_get(struct brcmf_msgbuf_pktids *pktids,
++				    bool ctl, dma_addr_t *physaddr, u32 *idx,
++				    u32 *len)
++{
++	struct brcmf_msgbuf_pool *pool;
++	u32 slot;
++	int err;
++
++	if (ctl)
++		err = brcmf_msgbuf_pool_claim(pktids, 0, pktids->nr_ctl,
++					      &pktids->last_ctl_idx, idx);
++	else
++		err = brcmf_msgbuf_pool_claim(pktids, pktids->nr_ctl,
++					      pktids->array_size -
++					      pktids->nr_ctl,
++					      &pktids->last_allocated_idx,
++					      idx);
++	if (err)
++		return err;
++
++	pool = brcmf_msgbuf_pool_of(pktids, *idx, &slot);
++	brcmf_msgbuf_pool_slot(pool, slot, physaddr);
++	pktids->array[*idx].skb = NULL;
++	pktids->array[*idx].data_offset = 0;
++	pktids->array[*idx].physaddr = *physaddr;
++	*len = pool->slot_size;
++	dma_sync_single_for_device(pool->dev, *physaddr, pool->slot_size,
++				   pool->dir);
++	return 0;
++}
++
+ static int
+ brcmf_msgbuf_alloc_pktid(struct device *dev,
+ 			 struct brcmf_msgbuf_pktids *pktids,
+@@ -327,6 +529,26 @@ brcmf_msgbuf_alloc_pktid(struct device *dev,
+ 
+ 	array = pktids->array;
+ 
++	if (pktids->pool) {
++		/* static pool mode (TX): copy the payload into a slot */
++		struct brcmf_msgbuf_pool *pool = pktids->pool;
++		u32 len = skb->len - data_offset;
++		void *va;
++
++		if (len > pool->slot_size)
++			return -EMSGSIZE;
++		if (brcmf_msgbuf_pool_claim(pktids, 0, pktids->array_size,
++					    &pktids->last_allocated_idx, idx))
++			return -ENOMEM;
++		va = brcmf_msgbuf_pool_slot(pool, *idx, physaddr);
++		memcpy(va, skb->data + data_offset, len);
++		dma_sync_single_for_device(dev, *physaddr, len, pool->dir);
++		array[*idx].data_offset = data_offset;
++		array[*idx].physaddr = *physaddr;
++		array[*idx].skb = skb;
++		return 0;
++	}
++
+ 	*physaddr = dma_map_single(dev, skb->data + data_offset,
+ 				   skb->len - data_offset, pktids->direction);
+ 
+@@ -378,10 +600,12 @@ brcmf_msgbuf_get_pktid(struct device *dev, struct brcmf_msgbuf_pktids *pktids,
+ 	}
+ 	if (pktids->array[idx].allocated.counter) {
+ 		pktid = &pktids->array[idx];
+-		dma_unmap_single(dev, pktid->physaddr,
+-				 pktid->skb->len - pktid->data_offset,
+-				 pktids->direction);
++		if (!pktids->pool)
++			dma_unmap_single(dev, pktid->physaddr,
++					 pktid->skb->len - pktid->data_offset,
++					 pktids->direction);
+ 		skb = pktid->skb;
++		pktid->skb = NULL;
+ 		pktid->allocated.counter = 0;
+ 		return skb;
+ 	} else {
+@@ -391,6 +615,55 @@ brcmf_msgbuf_get_pktid(struct device *dev, struct brcmf_msgbuf_pktids *pktids,
+ 	return NULL;
+ }
+ 
++/*
++ * Take the RX buffer behind @idx away from the dongle.  @used is the number
++ * of bytes from the start of the buffer the caller is going to look at; it is
++ * only needed in static pool mode, where that much is copied into a new skb
++ * that otherwise looks exactly like the one the per-packet path returns.
++ */
++static struct sk_buff *
++brcmf_msgbuf_get_rx_pktid(struct brcmf_msgbuf *msgbuf, u32 idx, u32 used)
++{
++	struct brcmf_msgbuf_pktids *pktids = msgbuf->rx_pktids;
++	struct device *dev = msgbuf->drvr->bus_if->dev;
++	struct brcmf_msgbuf_pool *pool;
++	struct sk_buff *skb;
++	dma_addr_t dma;
++	void *va;
++	u32 slot;
++
++	if (!pktids->pool) {
++		skb = brcmf_msgbuf_get_pktid(dev, pktids, idx);
++		if (!skb)
++			msgbuf->hp.rx_bad_id++;
++		return skb;
++	}
++
++	if (idx >= pktids->array_size ||
++	    !pktids->array[idx].allocated.counter) {
++		msgbuf->hp.rx_bad_id++;
++		if (net_ratelimit())
++			brcmf_err("Invalid rx packet id %u\n", idx);
++		return NULL;
++	}
++
++	pool = brcmf_msgbuf_pool_of(pktids, idx, &slot);
++	va = brcmf_msgbuf_pool_slot(pool, slot, &dma);
++	used = min(used, pool->slot_size);
++
++	skb = brcmu_pkt_buf_get_skb(pool->slot_size);
++	if (skb) {
++		if (used) {
++			dma_sync_single_for_cpu(dev, dma, used, pool->dir);
++			memcpy(skb->data, va, used);
++		}
++	} else {
++		msgbuf->hp.rx_copy_fail++;
++	}
++	pktids->array[idx].allocated.counter = 0;
++	return skb;
++}
++
+ 
+ static void
+ brcmf_msgbuf_release_array(struct device *dev,
+@@ -405,14 +678,19 @@ brcmf_msgbuf_release_array(struct device *dev,
+ 	do {
+ 		if (array[count].allocated.counter) {
+ 			pktid = &array[count];
+-			dma_unmap_single(dev, pktid->physaddr,
+-					 pktid->skb->len - pktid->data_offset,
+-					 pktids->direction);
+-			brcmu_pkt_buf_free_skb(pktid->skb);
++			if (!pktids->pool)
++				dma_unmap_single(dev, pktid->physaddr,
++						 pktid->skb->len -
++						 pktid->data_offset,
++						 pktids->direction);
++			if (pktid->skb)
++				brcmu_pkt_buf_free_skb(pktid->skb);
+ 		}
+ 		count++;
+ 	} while (count < pktids->array_size);
+ 
++	brcmf_msgbuf_pool_destroy(pktids->pool);
++	brcmf_msgbuf_pool_destroy(pktids->ctl_pool);
+ 	kfree(array);
+ 	kfree(pktids);
+ }
+@@ -507,13 +785,13 @@ static int brcmf_msgbuf_query_dcmd(struct brcmf_pub *drvr, int ifidx,
+ 
+ 	timeout = brcmf_msgbuf_ioctl_resp_wait(msgbuf);
+ 	if (!timeout) {
++		msgbuf->hp.ioctl_timeouts++;
+ 		bphy_err(drvr, "Timeout on response for query command\n");
+ 		return -EIO;
+ 	}
+ 
+-	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
+-				     msgbuf->rx_pktids,
+-				     msgbuf->ioctl_resp_pktid);
++	skb = brcmf_msgbuf_get_rx_pktid(msgbuf, msgbuf->ioctl_resp_pktid,
++					msgbuf->ioctl_resp_ret_len);
+ 	if (msgbuf->ioctl_resp_ret_len != 0) {
+ 		if (!skb)
+ 			return -EBADF;
+@@ -650,7 +928,8 @@ brcmf_msgbuf_flowring_create_worker(struct brcmf_msgbuf *msgbuf,
+ 					   BRCMF_H2D_MSGRING_FLOWRING_IDSTART);
+ 	memcpy(create->sa, work->sa, ETH_ALEN);
+ 	memcpy(create->da, work->da, ETH_ALEN);
+-	address = (u64)msgbuf->flowring_dma_handle[flowid];
++	address = (u64)msgbuf->flowring_dma_handle[flowid] |
++			  msgbuf->drvr->bus_if->dma_bus_or;
+ 	create->flow_ring_addr.high_addr = cpu_to_le32(address >> 32);
+ 	create->flow_ring_addr.low_addr = cpu_to_le32(address & 0xffffffff);
+ 	create->max_items = cpu_to_le16(BRCMF_H2D_TXFLOWRING_MAX_ITEM);
+@@ -730,6 +1009,7 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
+ 	u32 pktid;
+ 	struct msgbuf_tx_msghdr *tx_msghdr;
+ 	u64 address;
++	int err;
+ 
+ 	commonring = msgbuf->flowrings[flowid];
+ 	if (!brcmf_commonring_write_available(commonring))
+@@ -746,11 +1026,21 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
+ 			break;
+ 		}
+ 		skb_orphan(skb);
+-		if (brcmf_msgbuf_alloc_pktid(msgbuf->drvr->bus_if->dev,
+-					     msgbuf->tx_pktids, skb, ETH_HLEN,
+-					     &physaddr, &pktid)) {
++		err = brcmf_msgbuf_alloc_pktid(msgbuf->drvr->bus_if->dev,
++					       msgbuf->tx_pktids, skb, ETH_HLEN,
++					       &physaddr, &pktid);
++		if (err == -EMSGSIZE) {
++			/* static TX pool: frame does not fit a slot, drop */
++			brcmf_txfinalize(brcmf_get_ifp(drvr,
++					 brcmf_flowring_ifidx_get(flow, flowid)),
++					 skb, false);
++			continue;
++		}
++		if (err) {
+ 			brcmf_flowring_reinsert(flow, flowid, skb);
+-			bphy_err(drvr, "No PKTID available !!\n");
++			msgbuf->hp.no_pktid++;
++			if (!msgbuf->tx_pktids->pool)
++				bphy_err(drvr, "No PKTID available !!\n");
+ 			break;
+ 		}
+ 		ret_ptr = brcmf_commonring_reserve_for_write(commonring);
+@@ -773,7 +1063,8 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
+ 		tx_msghdr->seg_cnt = 1;
+ 		memcpy(tx_msghdr->txhdr, skb->data, ETH_HLEN);
+ 		tx_msghdr->data_len = cpu_to_le16(skb->len - ETH_HLEN);
+-		address = (u64)physaddr;
++		address = (u64)physaddr |
++			  msgbuf->drvr->bus_if->dma_bus_or;
+ 		tx_msghdr->data_buf_addr.high_addr = cpu_to_le32(address >> 32);
+ 		tx_msghdr->data_buf_addr.low_addr =
+ 			cpu_to_le32(address & 0xffffffff);
+@@ -781,6 +1072,7 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
+ 		tx_msghdr->metadata_buf_addr.high_addr = 0;
+ 		tx_msghdr->metadata_buf_addr.low_addr = 0;
+ 		atomic_inc(&commonring->outstanding_tx);
++		msgbuf->hp.tx_posted++;
+ 		if (count >= BRCMF_MSGBUF_TX_FLUSH_CNT2) {
+ 			brcmf_commonring_write_complete(commonring);
+ 			count = 0;
+@@ -887,6 +1179,8 @@ brcmf_msgbuf_process_ioctl_complete(struct brcmf_msgbuf *msgbuf, void *buf)
+ 			(s16)le16_to_cpu(ioctl_resp->compl_hdr.status);
+ 	msgbuf->ioctl_resp_ret_len = le16_to_cpu(ioctl_resp->resp_len);
+ 	msgbuf->ioctl_resp_pktid = le32_to_cpu(ioctl_resp->msg.request_id);
++	msgbuf->hp.ioctl_cmpl++;
++	msgbuf->hp.t_ioctl = ktime_get_ns();
+ 
+ 	brcmf_msgbuf_ioctl_resp_wake(msgbuf);
+ 
+@@ -908,6 +1202,8 @@ brcmf_msgbuf_process_txstatus(struct brcmf_msgbuf *msgbuf, void *buf)
+ 
+ 	tx_status = (struct msgbuf_tx_status *)buf;
+ 	idx = le32_to_cpu(tx_status->msg.request_id) - 1;
++	msgbuf->hp.tx_status++;
++	msgbuf->hp.t_txs = ktime_get_ns();
+ 	flow_ring_id = le16_to_cpu(tx_status->compl_hdr.flow_ring_id);
+ 	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
+ 				     msgbuf->tx_pktids, idx);
+@@ -956,6 +1252,19 @@ static u32 brcmf_msgbuf_rxbuf_data_post(struct brcmf_msgbuf *msgbuf, u32 count)
+ 		rx_bufpost = (struct msgbuf_rx_bufpost *)ret_ptr;
+ 		memset(rx_bufpost, 0, sizeof(*rx_bufpost));
+ 
++		if (msgbuf->rx_pktids->pool) {
++			skb = NULL;
++			if (brcmf_msgbuf_pool_rx_get(msgbuf->rx_pktids, false,
++						     &physaddr, &pktid,
++						     &pktlen)) {
++				msgbuf->hp.no_pktid++;
++				brcmf_commonring_write_cancel(commonring,
++							      alloced - i);
++				break;
++			}
++			goto have_buf;
++		}
++
+ 		skb = brcmu_pkt_buf_get_skb(BRCMF_MSGBUF_MAX_PKT_SIZE);
+ 
+ 		if (skb == NULL) {
+@@ -969,13 +1278,16 @@ static u32 brcmf_msgbuf_rxbuf_data_post(struct brcmf_msgbuf *msgbuf, u32 count)
+ 					     msgbuf->rx_pktids, skb, 0,
+ 					     &physaddr, &pktid)) {
+ 			dev_kfree_skb_any(skb);
++			msgbuf->hp.no_pktid++;
+ 			bphy_err(drvr, "No PKTID available !!\n");
+ 			brcmf_commonring_write_cancel(commonring, alloced - i);
+ 			break;
+ 		}
+ 
+-		if (msgbuf->rx_metadata_offset) {
+-			address = (u64)physaddr;
++have_buf:
++		if (skb && msgbuf->rx_metadata_offset) {
++			address = (u64)physaddr |
++			  msgbuf->drvr->bus_if->dma_bus_or;
+ 			rx_bufpost->metadata_buf_len =
+ 				cpu_to_le16(msgbuf->rx_metadata_offset);
+ 			rx_bufpost->metadata_buf_addr.high_addr =
+@@ -990,7 +1302,8 @@ static u32 brcmf_msgbuf_rxbuf_data_post(struct brcmf_msgbuf *msgbuf, u32 count)
+ 		rx_bufpost->msg.msgtype = MSGBUF_TYPE_RXBUF_POST;
+ 		rx_bufpost->msg.request_id = cpu_to_le32(pktid);
+ 
+-		address = (u64)physaddr;
++		address = (u64)physaddr |
++			  msgbuf->drvr->bus_if->dma_bus_or;
+ 		rx_bufpost->data_buf_len = cpu_to_le16((u16)pktlen);
+ 		rx_bufpost->data_buf_addr.high_addr =
+ 			cpu_to_le32(address >> 32);
+@@ -1066,6 +1379,18 @@ brcmf_msgbuf_rxbuf_ctrl_post(struct brcmf_msgbuf *msgbuf, bool event_buf,
+ 		rx_bufpost = (struct msgbuf_rx_ioctl_resp_or_event *)ret_ptr;
+ 		memset(rx_bufpost, 0, sizeof(*rx_bufpost));
+ 
++		if (msgbuf->rx_pktids->pool) {
++			if (brcmf_msgbuf_pool_rx_get(msgbuf->rx_pktids, true,
++						     &physaddr, &pktid,
++						     &pktlen)) {
++				msgbuf->hp.no_pktid++;
++				brcmf_commonring_write_cancel(commonring,
++							      alloced - i);
++				break;
++			}
++			goto have_buf;
++		}
++
+ 		skb = brcmu_pkt_buf_get_skb(BRCMF_MSGBUF_MAX_CTL_PKT_SIZE);
+ 
+ 		if (skb == NULL) {
+@@ -1079,10 +1404,12 @@ brcmf_msgbuf_rxbuf_ctrl_post(struct brcmf_msgbuf *msgbuf, bool event_buf,
+ 					     msgbuf->rx_pktids, skb, 0,
+ 					     &physaddr, &pktid)) {
+ 			dev_kfree_skb_any(skb);
++			msgbuf->hp.no_pktid++;
+ 			bphy_err(drvr, "No PKTID available !!\n");
+ 			brcmf_commonring_write_cancel(commonring, alloced - i);
+ 			break;
+ 		}
++have_buf:
+ 		if (event_buf)
+ 			rx_bufpost->msg.msgtype = MSGBUF_TYPE_EVENT_BUF_POST;
+ 		else
+@@ -1090,7 +1417,8 @@ brcmf_msgbuf_rxbuf_ctrl_post(struct brcmf_msgbuf *msgbuf, bool event_buf,
+ 				MSGBUF_TYPE_IOCTLRESP_BUF_POST;
+ 		rx_bufpost->msg.request_id = cpu_to_le32(pktid);
+ 
+-		address = (u64)physaddr;
++		address = (u64)physaddr |
++			  msgbuf->drvr->bus_if->dma_bus_or;
+ 		rx_bufpost->host_buf_len = cpu_to_le16((u16)pktlen);
+ 		rx_bufpost->host_buf_addr.high_addr =
+ 			cpu_to_le32(address >> 32);
+@@ -1146,8 +1474,11 @@ static void brcmf_msgbuf_process_event(struct brcmf_msgbuf *msgbuf, void *buf)
+ 		msgbuf->cur_eventbuf--;
+ 	brcmf_msgbuf_rxbuf_event_post(msgbuf);
+ 
+-	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
+-				     msgbuf->rx_pktids, idx);
++	msgbuf->hp.events++;
++	msgbuf->hp.t_evt = ktime_get_ns();
++
++	skb = brcmf_msgbuf_get_rx_pktid(msgbuf, idx,
++					msgbuf->rx_dataoffset + buflen);
+ 	if (!skb)
+ 		return;
+ 
+@@ -1192,8 +1523,12 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_msgbuf *msgbuf, void *buf)
+ 	idx = le32_to_cpu(rx_complete->msg.request_id);
+ 	flags = le16_to_cpu(rx_complete->flags);
+ 
+-	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
+-				     msgbuf->rx_pktids, idx);
++	msgbuf->hp.rx_cmpl++;
++	msgbuf->hp.t_rx = ktime_get_ns();
++
++	skb = brcmf_msgbuf_get_rx_pktid(msgbuf, idx,
++					(data_offset ? data_offset :
++					 msgbuf->rx_dataoffset) + buflen);
+ 	if (!skb)
+ 		return;
+ 
+@@ -1559,6 +1894,109 @@ static void brcmf_msgbuf_debugfs_create(struct brcmf_pub *drvr)
+ 	brcmf_debugfs_add_entry(drvr, "msgbuf_stats", brcmf_msgbuf_stats_read);
+ }
+ 
++/* Create the static pools asked for on the command line.  Any failure just
++ * leaves the direction concerned in the normal per-packet mapping mode.
++ */
++static void brcmf_msgbuf_setup_pools(struct brcmf_msgbuf *msgbuf)
++{
++	struct device *dev = msgbuf->drvr->bus_if->dev;
++	struct brcmf_msgbuf_pktids *rx = msgbuf->rx_pktids;
++	struct brcmf_msgbuf_pktids *tx = msgbuf->tx_pktids;
++
++	if (brcmf_static_rx) {
++		rx->pool = brcmf_msgbuf_pool_create(dev, rx->array_size -
++						    BRCMF_POOL_RX_CTL_SLOTS,
++						    BRCMF_MSGBUF_MAX_PKT_SIZE,
++						    DMA_BIDIRECTIONAL);
++		rx->ctl_pool = brcmf_msgbuf_pool_create(dev,
++						BRCMF_POOL_RX_CTL_SLOTS,
++						BRCMF_MSGBUF_MAX_CTL_PKT_SIZE,
++						DMA_BIDIRECTIONAL);
++		if (rx->pool && rx->ctl_pool) {
++			rx->nr_ctl = BRCMF_POOL_RX_CTL_SLOTS;
++			rx->last_allocated_idx = rx->nr_ctl;
++			if (msgbuf->max_rxbufpost > rx->pool->slots - 32)
++				msgbuf->max_rxbufpost = rx->pool->slots - 32;
++		} else {
++			brcmf_msgbuf_pool_destroy(rx->pool);
++			brcmf_msgbuf_pool_destroy(rx->ctl_pool);
++			rx->pool = NULL;
++			rx->ctl_pool = NULL;
++			pr_warn("brcmfmac: static_rx pool allocation failed, using per-packet mapping\n");
++		}
++	}
++
++	if (brcmf_static_tx) {
++		tx->pool = brcmf_msgbuf_pool_create(dev, tx->array_size,
++						    BRCMF_MSGBUF_MAX_PKT_SIZE,
++						    DMA_TO_DEVICE);
++		if (!tx->pool)
++			pr_warn("brcmfmac: static_tx pool allocation failed, using per-packet mapping\n");
++	}
++
++	if (rx->pool || tx->pool)
++		pr_info("brcmfmac: static pools: rx %u data + %u ctl slots, tx %u slots\n",
++			rx->pool ? rx->pool->slots : 0,
++			rx->pool ? rx->nr_ctl : 0,
++			tx->pool ? tx->pool->slots : 0);
++}
++
++static u32 brcmf_msgbuf_pktids_in_use(struct brcmf_msgbuf_pktids *pktids)
++{
++	u32 i, n = 0;
++
++	for (i = 0; i < pktids->array_size; i++)
++		if (pktids->array[i].allocated.counter)
++			n++;
++	return n;
++}
++
++/* Protocol-layer half of the "state" debugfs file (see pcie.c). */
++void brcmf_msgbuf_dump_state(struct brcmf_pub *drvr, struct seq_file *s)
++{
++	struct brcmf_msgbuf *msgbuf;
++	u64 now = ktime_get_ns();
++	u16 i;
++
++	if (!drvr || !drvr->proto || !drvr->proto->pd)
++		return;
++	msgbuf = drvr->proto->pd;
++
++#define HP_AGO(t) ((t) ? (long long)div_u64(now - (t), NSEC_PER_MSEC) : -1LL)
++	seq_printf(s, "msgbuf: rx_cmpl=%llu (%lld ms ago) events=%llu (%lld ms ago) tx_posted=%llu tx_status=%llu (%lld ms ago)\n",
++		   msgbuf->hp.rx_cmpl, HP_AGO(msgbuf->hp.t_rx),
++		   msgbuf->hp.events, HP_AGO(msgbuf->hp.t_evt),
++		   msgbuf->hp.tx_posted, msgbuf->hp.tx_status,
++		   HP_AGO(msgbuf->hp.t_txs));
++	seq_printf(s, "msgbuf: ioctl_cmpl=%llu (%lld ms ago) ioctl_timeouts=%llu rx_bad_id=%llu rx_copy_fail=%llu no_pktid=%llu\n",
++		   msgbuf->hp.ioctl_cmpl, HP_AGO(msgbuf->hp.t_ioctl),
++		   msgbuf->hp.ioctl_timeouts, msgbuf->hp.rx_bad_id,
++		   msgbuf->hp.rx_copy_fail, msgbuf->hp.no_pktid);
++#undef HP_AGO
++	seq_printf(s, "msgbuf: rxbufpost=%u/%u eventbuf=%u/%u ioctlrespbuf=%u/%u rx_dataoffset=%u\n",
++		   msgbuf->rxbufpost, msgbuf->max_rxbufpost,
++		   msgbuf->cur_eventbuf, msgbuf->max_eventbuf,
++		   msgbuf->cur_ioctlrespbuf, msgbuf->max_ioctlrespbuf,
++		   msgbuf->rx_dataoffset);
++	seq_printf(s, "msgbuf: pktids in use rx=%u/%u (%s) tx=%u/%u (%s)\n",
++		   brcmf_msgbuf_pktids_in_use(msgbuf->rx_pktids),
++		   msgbuf->rx_pktids->array_size,
++		   msgbuf->rx_pktids->pool ? "static pool" : "per-packet map",
++		   brcmf_msgbuf_pktids_in_use(msgbuf->tx_pktids),
++		   msgbuf->tx_pktids->array_size,
++		   msgbuf->tx_pktids->pool ? "static pool" : "per-packet map");
++	for (i = 0; i < msgbuf->max_flowrings; i++) {
++		if (!msgbuf->flow || i >= msgbuf->flow->nrofrings ||
++		    !msgbuf->flow->rings[i])
++			continue;
++		seq_printf(s, "msgbuf: flowring %u: host r=%u w=%u outstanding_tx=%d queued=%u\n",
++			   i, msgbuf->flowrings[i]->r_ptr,
++			   msgbuf->flowrings[i]->w_ptr,
++			   atomic_read(&msgbuf->flowrings[i]->outstanding_tx),
++			   brcmf_flowring_qlen(msgbuf->flow, i));
++	}
++}
++
+ int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr)
+ {
+ 	struct brcmf_bus_msgbuf *if_msgbuf;
+@@ -1601,7 +2039,8 @@ int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr)
+ 					     GFP_KERNEL);
+ 	if (!msgbuf->ioctbuf)
+ 		goto fail;
+-	address = (u64)msgbuf->ioctbuf_handle;
++	address = (u64)msgbuf->ioctbuf_handle |
++			  msgbuf->drvr->bus_if->dma_bus_or;
+ 	msgbuf->ioctbuf_phys_hi = address >> 32;
+ 	msgbuf->ioctbuf_phys_lo = address & 0xffffffff;
+ 
+@@ -1634,15 +2073,24 @@ int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr)
+ 	msgbuf->max_ioctlrespbuf = BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST;
+ 	msgbuf->max_eventbuf = BRCMF_MSGBUF_MAX_EVENTBUF_POST;
+ 
+-	msgbuf->tx_pktids = brcmf_msgbuf_init_pktids(NR_TX_PKTIDS,
+-						     DMA_TO_DEVICE);
++	msgbuf->tx_pktids = brcmf_msgbuf_init_pktids(brcmf_static_tx ?
++				clamp(brcmf_static_tx_slots, 64U,
++				      (unsigned int)NR_TX_PKTIDS) :
++				NR_TX_PKTIDS, DMA_TO_DEVICE);
+ 	if (!msgbuf->tx_pktids)
+ 		goto fail;
++	/* Use DMA_BIDIRECTIONAL: on Apple DART, DMA_FROM_DEVICE maps
++	 * buffers as device-write-only (IOMMU_WRITE but not IOMMU_READ).
++	 * The firmware needs to READ from RX buffers to manage shared
++	 * state. Same fix as aurora-silicon/alarm-aurora#48 for BCM4378.
++	 */
+ 	msgbuf->rx_pktids = brcmf_msgbuf_init_pktids(NR_RX_PKTIDS,
+-						     DMA_FROM_DEVICE);
++						     DMA_BIDIRECTIONAL);
+ 	if (!msgbuf->rx_pktids)
+ 		goto fail;
+ 
++	brcmf_msgbuf_setup_pools(msgbuf);
++
+ 	msgbuf->flow = brcmf_flowring_attach(drvr->bus_if->dev,
+ 					     if_msgbuf->max_flowrings);
+ 	if (!msgbuf->flow)
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.h b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.h
+index 6a849f4a9..babf09beb 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.h
+@@ -28,7 +28,10 @@ struct msgbuf_buf_addr {
+ 	__le32		high_addr;
+ };
+ 
++struct seq_file;
++
+ int brcmf_proto_msgbuf_rx_trigger(struct device *dev);
++void brcmf_msgbuf_dump_state(struct brcmf_pub *drvr, struct seq_file *s);
+ void brcmf_msgbuf_delete_flowring(struct brcmf_pub *drvr, u16 flowid);
+ int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr);
+ void brcmf_proto_msgbuf_detach(struct brcmf_pub *drvr);
+@@ -38,6 +41,8 @@ static inline int brcmf_proto_msgbuf_attach(struct brcmf_pub *drvr)
+ 	return 0;
+ }
+ static inline void brcmf_proto_msgbuf_detach(struct brcmf_pub *drvr) {}
++static inline void brcmf_msgbuf_dump_state(struct brcmf_pub *drvr,
++					   struct seq_file *s) {}
+ #endif
+ 
+ #endif /* BRCMFMAC_MSGBUF_H */
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 55f4d7b97..8008c0a40 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -15,8 +15,13 @@
+ #include <linux/sched/signal.h>
+ #include <linux/kthread.h>
+ #include <linux/io.h>
++#include <linux/iommu.h>
+ #include <linux/random.h>
+ #include <linux/unaligned.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++#include <linux/ktime.h>
++#include <linux/math64.h>
+ 
+ #include <soc.h>
+ #include <chipcommon.h>
+@@ -55,6 +60,7 @@ BRCMF_FW_DEF(4350C, "brcmfmac4350c2-pcie");
+ BRCMF_FW_CLM_DEF(4355, "brcmfmac4355-pcie");
+ BRCMF_FW_CLM_DEF(4355C1, "brcmfmac4355c1-pcie");
+ BRCMF_FW_CLM_DEF(4356, "brcmfmac4356-pcie");
++BRCMF_FW_CLM_DEF(4357, "brcmfmac4357-pcie");
+ BRCMF_FW_CLM_DEF(43570, "brcmfmac43570-pcie");
+ BRCMF_FW_DEF(4358, "brcmfmac4358-pcie");
+ BRCMF_FW_DEF(4359, "brcmfmac4359-pcie");
+@@ -92,6 +98,13 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_4355_CHIP_ID, 0x00002000, 54591),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4355_CHIP_ID, 0xFFFFF800, 4355C1), /* rev ID 12/C2 seen */
+ 	BRCMF_FW_ENTRY(BRCM_CC_4356_CHIP_ID, 0xFFFFFFFF, 4356),
++	/* Apple B0/B1 steppings are told apart by the board-specific name.
++	 * 4347/4357/4361 are one chip family; which ID the HomePod part
++	 * reports in ChipCommon has not been read from hardware.
++	 */
++	BRCMF_FW_ENTRY(BRCM_CC_4347_CHIP_ID, 0xFFFFFFFF, 4357),
++	BRCMF_FW_ENTRY(BRCM_CC_4357_CHIP_ID, 0xFFFFFFFF, 4357),
++	BRCMF_FW_ENTRY(BRCM_CC_4361_CHIP_ID, 0xFFFFFFFF, 4357),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43567_CHIP_ID, 0xFFFFFFFF, 43570),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43569_CHIP_ID, 0xFFFFFFFF, 43570),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43570_CHIP_ID, 0xFFFFFFFF, 43570),
+@@ -114,6 +127,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_4387_CHIP_ID, 0xFFFFFFFF, 4387C2), /* revision ID 7 */
+ };
+ 
++#define BRCMF_PCIE_IDX_PAD			16	/* spare index slots after each DMA index array */
+ #define BRCMF_PCIE_FW_UP_TIMEOUT		5000 /* msec */
+ 
+ #define BRCMF_PCIE_REG_MAP_SIZE			(32 * 1024)
+@@ -263,6 +277,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ 
+ #define BRCMF_H2D_HOST_D3_INFORM		0x00000001
+ #define BRCMF_H2D_HOST_DS_ACK			0x00000002
++#define BRCMF_H2D_HOST_DS_NAK			0x00000004
+ #define BRCMF_H2D_HOST_D0_INFORM_IN_USE		0x00000008
+ #define BRCMF_H2D_HOST_D0_INFORM		0x00000010
+ 
+@@ -358,6 +373,25 @@ struct brcmf_pciedev_info {
+ 	struct brcmf_mp_device *settings;
+ 	struct brcmf_otp_params otp;
+ 	bool fwseed;
++	u32 fw_blk_csum[256];
++	u32 fw_blk_count;
++	u32 fw_size;
++	u32 tcm_size;
++	/* diagnostics, see /sys/kernel/debug/homepod-wifi/state */
++	struct {
++		u64 doorbells;
++		u64 irqs;
++		u64 mb_ds_req;
++		u64 mb_ds_exit;
++		u64 mb_d3_ack;
++		u64 mb_fwhalt;
++		u32 mb_last;
++		u32 last_intstatus;
++		u64 t_mb;
++		u64 t_ds_req;
++		u64 t_irq;
++		struct dentry *dir;
++	} hp;
+ #ifdef DEBUG
+ 	u32 console_interval;
+ 	bool console_active;
+@@ -466,6 +500,7 @@ brcmf_pcie_prepare_fw_request(struct brcmf_pciedev_info *devinfo);
+ static void
+ brcmf_pcie_fwcon_timer(struct brcmf_pciedev_info *devinfo, bool active);
+ static void brcmf_pcie_debugfs_create(struct device *dev);
++static void brcmf_pcie_hp_debugfs_remove(struct brcmf_pciedev_info *devinfo);
+ 
+ static u16
+ brcmf_pcie_read_reg16(struct brcmf_pciedev_info *devinfo, u32 reg_offset)
+@@ -797,6 +832,10 @@ brcmf_pcie_send_mb_data(struct brcmf_pciedev_info *devinfo, u32 htod_mb_data)
+ }
+ 
+ 
++static unsigned int brcmf_pcie_ds;
++module_param_named(pcie_ds, brcmf_pcie_ds, uint, 0644);
++MODULE_PARM_DESC(pcie_ds, "answer to the dongle's deep-sleep request: 0 ack (default), 1 nak, 2 ignore");
++
+ static void brcmf_pcie_handle_mb_data(struct brcmf_pciedev_info *devinfo)
+ {
+ 	struct brcmf_pcie_shared_info *shared;
+@@ -812,22 +851,44 @@ static void brcmf_pcie_handle_mb_data(struct brcmf_pciedev_info *devinfo)
+ 
+ 	brcmf_pcie_write_tcm32(devinfo, addr, 0);
+ 
++	devinfo->hp.mb_last = dtoh_mb_data;
++	devinfo->hp.t_mb = ktime_get_ns();
++
+ 	brcmf_dbg(PCIE, "D2H_MB_DATA: 0x%04x\n", dtoh_mb_data);
+ 	if (dtoh_mb_data & BRCMF_D2H_DEV_DS_ENTER_REQ)  {
++		devinfo->hp.mb_ds_req++;
++		devinfo->hp.t_ds_req = devinfo->hp.t_mb;
+ 		brcmf_dbg(PCIE, "D2H_MB_DATA: DEEP SLEEP REQ\n");
+-		brcmf_pcie_send_mb_data(devinfo, BRCMF_H2D_HOST_DS_ACK);
+-		brcmf_dbg(PCIE, "D2H_MB_DATA: sent DEEP SLEEP ACK\n");
++		/* brcmfmac.pcie_ds: 0 = acknowledge (stock behaviour),
++		 * 1 = refuse with DS_NAK, 2 = do not answer at all.
++		 */
++		if (brcmf_pcie_ds == 0)
++			brcmf_pcie_send_mb_data(devinfo, BRCMF_H2D_HOST_DS_ACK);
++		else if (brcmf_pcie_ds == 1)
++			brcmf_pcie_send_mb_data(devinfo, BRCMF_H2D_HOST_DS_NAK);
+ 	}
+-	if (dtoh_mb_data & BRCMF_D2H_DEV_DS_EXIT_NOTE)
++	if (dtoh_mb_data & BRCMF_D2H_DEV_DS_EXIT_NOTE) {
++		devinfo->hp.mb_ds_exit++;
+ 		brcmf_dbg(PCIE, "D2H_MB_DATA: DEEP SLEEP EXIT\n");
++	}
+ 	if (dtoh_mb_data & BRCMF_D2H_DEV_D3_ACK) {
++		devinfo->hp.mb_d3_ack++;
+ 		brcmf_dbg(PCIE, "D2H_MB_DATA: D3 ACK\n");
+ 		devinfo->mbdata_completed = true;
+ 		wake_up(&devinfo->mbdata_resp_wait);
+ 	}
+ 	if (dtoh_mb_data & BRCMF_D2H_DEV_FWHALT) {
+-		brcmf_dbg(PCIE, "D2H_MB_DATA: FW HALT\n");
+-		brcmf_fw_crashed(&devinfo->pdev->dev);
++		devinfo->hp.mb_fwhalt++;
++		if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID) {
++			/* BCM4357: ignore FW HALT during init — the firmware's
++			 * RO region protection triggers on its own ROML
++			 * patching. Let it continue and see if it recovers.
++			 */
++			brcmf_dbg(PCIE, "D2H_MB_DATA: FW HALT (BCM4357: IGNORED)\n");
++		} else {
++			brcmf_dbg(PCIE, "D2H_MB_DATA: FW HALT\n");
++			brcmf_fw_crashed(&devinfo->pdev->dev);
++		}
+ 	}
+ }
+ 
+@@ -946,6 +1007,9 @@ static irqreturn_t brcmf_pcie_isr_thread(int irq, void *arg)
+ 	devinfo->in_irq = true;
+ 	status = brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxint);
+ 	brcmf_dbg(PCIE, "Enter %x\n", status);
++	devinfo->hp.irqs++;
++	devinfo->hp.t_irq = ktime_get_ns();
++	devinfo->hp.last_intstatus = status;
+ 	if (status) {
+ 		brcmf_pcie_write_reg32(devinfo, devinfo->reginfo->mailboxint,
+ 				       status);
+@@ -1061,9 +1125,9 @@ static int brcmf_pcie_ring_mb_ring_bell(void *ctx)
+ 	if (devinfo->state != BRCMFMAC_PCIE_STATE_UP)
+ 		return -EIO;
+ 
+-	brcmf_dbg(PCIE, "RING !\n");
+ 	/* Any arbitrary value will do, lets use 1 */
+ 	brcmf_pcie_write_reg32(devinfo, devinfo->reginfo->h2d_mailbox_0, 1);
++	devinfo->hp.doorbells++;
+ 
+ 	return 0;
+ }
+@@ -1119,6 +1183,15 @@ brcmf_pcie_init_dmabuffer_for_device(struct brcmf_pciedev_info *devinfo,
+ 		return NULL;
+ 
+ 	address = (u64)*dma_handle;
++
++	/*
++	 * T7000 PCIe inbound routing: Apple DT vm-offset = 0x80000000.
++	 * The hardware routes bus addresses [0x80000000, 0xC0000000) to the
++	 * DART, stripping bits[31:30] for the page-table lookup.
++	 */
++	if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID)
++		address |= 0x80000000ULL;
++
+ 	brcmf_pcie_write_tcm32(devinfo, tcm_dma_phys_addr,
+ 			       address & 0xffffffff);
+ 	brcmf_pcie_write_tcm32(devinfo, tcm_dma_phys_addr + 4, address >> 32);
+@@ -1233,6 +1306,7 @@ static int brcmf_pcie_init_ringbuffers(struct brcmf_pciedev_info *devinfo)
+ 	u16 max_flowrings;
+ 	u16 max_submissionrings;
+ 	u16 max_completionrings;
++	u32 sub_slots, cmpl_slots;
+ 
+ 	memcpy_fromio(&ringinfo, devinfo->tcm + devinfo->shared.ring_info_addr,
+ 		      sizeof(ringinfo));
+@@ -1251,8 +1325,22 @@ static int brcmf_pcie_init_ringbuffers(struct brcmf_pciedev_info *devinfo)
+ 		return -EIO;
+ 	}
+ 
++	/*
++	 * HomePod (BCM4357, Apple firmware 13.45.26): the dongle writes its
++	 * index arrays (h2d read indices, d2h write indices) in one piece
++	 * that is TWO entries longer than max_submissionrings /
++	 * max_completionrings from the ring info. With the stock back-to-back
++	 * layout that overrun zeroed the host's read indices of the
++	 * ctrl-complete and tx-complete rings every time the dongle updated
++	 * a write index, so the dongle saw the tx-complete ring as never read
++	 * and stopped for good after 1023 transmitted packets (found
++	 * 2026-11-20 by watching the buffer). Leave a gap after every array.
++	 */
++	sub_slots = max_submissionrings + BRCMF_PCIE_IDX_PAD;
++	cmpl_slots = max_completionrings + BRCMF_PCIE_IDX_PAD;
++
+ 	if (devinfo->dma_idx_sz != 0) {
+-		bufsz = (max_submissionrings + max_completionrings) *
++		bufsz = (sub_slots + cmpl_slots) *
+ 			devinfo->dma_idx_sz * 2;
+ 		devinfo->idxbuf = dma_alloc_coherent(&devinfo->pdev->dev, bufsz,
+ 						     &devinfo->idxbuf_dmahandle,
+@@ -1279,30 +1367,38 @@ static int brcmf_pcie_init_ringbuffers(struct brcmf_pciedev_info *devinfo)
+ 
+ 		h2d_w_idx_ptr = 0;
+ 		address = (u64)devinfo->idxbuf_dmahandle;
++		/*
++		 * BCM4357 on T7000: apply the same 0x80000000 bus
++		 * offset to DMA index buffer addresses as we do for
++		 * ring buffers, scratch, and ringupd.
++		 */
++		if (devinfo->ci &&
++		    devinfo->ci->chip == BRCM_CC_4357_CHIP_ID)
++			address |= 0x80000000ULL;
+ 		ringinfo.h2d_w_idx_hostaddr.low_addr =
+ 			cpu_to_le32(address & 0xffffffff);
+ 		ringinfo.h2d_w_idx_hostaddr.high_addr =
+ 			cpu_to_le32(address >> 32);
+ 
+ 		h2d_r_idx_ptr = h2d_w_idx_ptr +
+-				max_submissionrings * idx_offset;
+-		address += max_submissionrings * idx_offset;
++				sub_slots * idx_offset;
++		address += sub_slots * idx_offset;
+ 		ringinfo.h2d_r_idx_hostaddr.low_addr =
+ 			cpu_to_le32(address & 0xffffffff);
+ 		ringinfo.h2d_r_idx_hostaddr.high_addr =
+ 			cpu_to_le32(address >> 32);
+ 
+ 		d2h_w_idx_ptr = h2d_r_idx_ptr +
+-				max_submissionrings * idx_offset;
+-		address += max_submissionrings * idx_offset;
++				sub_slots * idx_offset;
++		address += sub_slots * idx_offset;
+ 		ringinfo.d2h_w_idx_hostaddr.low_addr =
+ 			cpu_to_le32(address & 0xffffffff);
+ 		ringinfo.d2h_w_idx_hostaddr.high_addr =
+ 			cpu_to_le32(address >> 32);
+ 
+ 		d2h_r_idx_ptr = d2h_w_idx_ptr +
+-				max_completionrings * idx_offset;
+-		address += max_completionrings * idx_offset;
++				cmpl_slots * idx_offset;
++		address += cmpl_slots * idx_offset;
+ 		ringinfo.d2h_r_idx_hostaddr.low_addr =
+ 			cpu_to_le32(address & 0xffffffff);
+ 		ringinfo.d2h_r_idx_hostaddr.high_addr =
+@@ -1416,6 +1512,8 @@ static int brcmf_pcie_init_scratchbuffers(struct brcmf_pciedev_info *devinfo)
+ 	addr = devinfo->shared.tcm_base_address +
+ 	       BRCMF_SHARED_DMA_SCRATCH_ADDR_OFFSET;
+ 	address = (u64)devinfo->shared.scratch_dmahandle;
++	if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID)
++		address |= 0x80000000ULL;
+ 	brcmf_pcie_write_tcm32(devinfo, addr, address & 0xffffffff);
+ 	brcmf_pcie_write_tcm32(devinfo, addr + 4, address >> 32);
+ 	addr = devinfo->shared.tcm_base_address +
+@@ -1433,6 +1531,8 @@ static int brcmf_pcie_init_scratchbuffers(struct brcmf_pciedev_info *devinfo)
+ 	addr = devinfo->shared.tcm_base_address +
+ 	       BRCMF_SHARED_DMA_RINGUPD_ADDR_OFFSET;
+ 	address = (u64)devinfo->shared.ringupd_dmahandle;
++	if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID)
++		address |= 0x80000000ULL;
+ 	brcmf_pcie_write_tcm32(devinfo, addr, address & 0xffffffff);
+ 	brcmf_pcie_write_tcm32(devinfo, addr + 4, address >> 32);
+ 	addr = devinfo->shared.tcm_base_address +
+@@ -1555,6 +1655,7 @@ static int brcmf_pcie_reset(struct device *dev)
+ 	struct brcmf_fw_request *fwreq;
+ 	int err;
+ 
++	brcmf_pcie_hp_debugfs_remove(devinfo);
+ 	brcmf_pcie_intr_disable(devinfo);
+ 
+ 	brcmf_pcie_bus_console_read(devinfo, true);
+@@ -1647,6 +1748,24 @@ brcmf_pcie_init_share_ram_info(struct brcmf_pciedev_info *devinfo,
+ 			devinfo->dma_idx_sz = sizeof(u32);
+ 	}
+ 
++	/* BCM4357 on Apple T7000: disable DMA_INDEX.  The T7000 PCIe
++	 * inbound path has a secondary filter (DAPF) whose registers
++	 * are read-only under Linux, and it blocks device-initiated
++	 * DMA.  Fall back to TCM-based index updates so the firmware
++	 * reads ring indices from TCM instead of DMAing them.
++	 */
++	if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID) {
++		/*
++		 * BCM4357 on Apple T7000: the firmware computes DMA_INDEX
++		 * at runtime and will DMA read/write index buffers regardless
++		 * of what the host sets.  Keep DMA_INDEX enabled so the host
++		 * allocates proper DMA index buffers.  HOSTRDY can still be
++		 * cleared since the firmware's handler doesn't work.
++		 */
++		if (shared->flags & BRCMF_PCIE_SHARED_HOSTRDY_DB1)
++			shared->flags &= ~BRCMF_PCIE_SHARED_HOSTRDY_DB1;
++	}
++
+ 	addr = sharedram_addr + BRCMF_SHARED_MAX_RXBUFPOST_OFFSET;
+ 	shared->max_rxbufpost = brcmf_pcie_read_tcm16(devinfo, addr);
+ 	if (shared->max_rxbufpost == 0)
+@@ -1711,6 +1830,38 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
+ 	memcpy_toio(devinfo->tcm + devinfo->ci->rambase,
+ 		    (void *)fw->data, fw->size);
+ 
++	/* Verify firmware and save per-4KB checksums for post-crash analysis */
++	{
++		u32 i, mismatches = 0;
++		u32 blk;
++		const u8 *fw_data = fw->data;
++		/* Save checksum per 4KB block (max 256 blocks = 1MB) */
++		for (blk = 0; blk < 256 && blk * 4096 < fw->size; blk++) {
++			u32 csum = 0;
++			u32 end = min((blk + 1) * 4096, (u32)fw->size);
++			for (i = blk * 4096; i < end; i += 4)
++				csum += get_unaligned_le32(fw_data + i);
++			devinfo->fw_blk_csum[blk] = csum;
++		}
++		devinfo->fw_blk_count = blk;
++		devinfo->fw_size = fw->size;
++		/* Quick mismatch check */
++		for (i = 0; i < fw->size; i += 4) {
++			u32 orig = get_unaligned_le32(fw_data + i);
++			u32 tcm = ioread32(devinfo->tcm + devinfo->ci->rambase + i);
++			if (orig != tcm) {
++				if (mismatches < 3)
++					dev_err(&devinfo->pdev->dev,
++						"FW verify MISMATCH at 0x%x: wrote 0x%08x read 0x%08x\n",
++						i, orig, tcm);
++				mismatches++;
++			}
++		}
++		dev_info(&devinfo->pdev->dev,
++			 "FW verify: %u mismatches in %zu bytes (%u blocks saved)\n",
++			 mismatches, fw->size, blk);
++	}
++
+ 	resetintr = get_unaligned_le32(fw->data);
+ 	release_firmware(fw);
+ 
+@@ -1780,6 +1931,10 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
+ 	}
+ 	brcmf_dbg(PCIE, "Shared RAM addr: 0x%08x\n", sharedram_addr);
+ 
++	dev_info(&devinfo->pdev->dev,
++		 "FW shared RAM: 0x%08x rambase=0x%x ramsize=0x%x\n",
++		 sharedram_addr, devinfo->ci->rambase, devinfo->ci->ramsize);
++
+ 	return (brcmf_pcie_init_share_ram_info(devinfo, sharedram_addr));
+ }
+ 
+@@ -1814,6 +1969,7 @@ static int brcmf_pcie_get_resource(struct brcmf_pciedev_info *devinfo)
+ 
+ 	devinfo->regs = ioremap(bar0_addr, BRCMF_PCIE_REG_MAP_SIZE);
+ 	devinfo->tcm = ioremap(bar1_addr, bar1_size);
++	devinfo->tcm_size = bar1_size;
+ 
+ 	if (!devinfo->regs || !devinfo->tcm) {
+ 		brcmf_err(bus, "ioremap() failed (%p,%p)\n", devinfo->regs,
+@@ -2046,6 +2202,11 @@ brcmf_pcie_parse_otp(struct brcmf_pciedev_info *devinfo, u8 *otp, size_t size)
+ 	return ret;
+ }
+ 
++static bool brcmf_pcie_is_4357(struct brcmf_pciedev_info *devinfo)
++{
++	return devinfo->pdev->device == BRCM_PCIE_4357_DEVICE_ID;
++}
++
+ static int brcmf_pcie_read_otp(struct brcmf_pciedev_info *devinfo)
+ {
+ 	const struct pci_dev *pdev = devinfo->pdev;
+@@ -2066,6 +2227,16 @@ static int brcmf_pcie_read_otp(struct brcmf_pciedev_info *devinfo)
+ 		base = 0x8c0;
+ 		words = 0x1a0;
+ 		break;
++	case BRCM_CC_4347_CHIP_ID:
++	case BRCM_CC_4357_CHIP_ID:
++	case BRCM_CC_4361_CHIP_ID:
++		/* From AppleBCMWLANChipManagerPCIe4357: OTP window
++		 * { 0x110, 0x2f0 }, same layout as 4378 { 0x120, 0x2e0 }.
++		 */
++		coreid = BCMA_CORE_GCI;
++		base = 0x1110;
++		words = 0x178;
++		break;
+ 	case BRCM_CC_4377_CHIP_ID:
+ 	case BRCM_CC_4378_CHIP_ID:
+ 		coreid = BCMA_CORE_GCI;
+@@ -2128,6 +2299,21 @@ static int brcmf_pcie_read_otp(struct brcmf_pciedev_info *devinfo)
+ 	ret = brcmf_pcie_parse_otp(devinfo, (u8 *)otp, 2 * words);
+ 	kfree(otp);
+ 
++	if (ret && brcmf_pcie_is_4357(devinfo)) {
++		/* The 4357 OTP location has not been checked on hardware.
++		 * Do not fail the probe over it, the generic firmware
++		 * names still work.
++		 */
++		brcmf_err(bus,
++			  "OTP not parsed (%d), using default firmware names\n",
++			  ret);
++		ret = 0;
++	} else if (!ret && brcmf_pcie_is_4357(devinfo)) {
++		brcmf_info("BCM4357 OTP: module=%s vendor=%s version=%s\n",
++			   devinfo->otp.module, devinfo->otp.vendor,
++			   devinfo->otp.version);
++	}
++
+ 	return ret;
+ }
+ 
+@@ -2136,6 +2322,169 @@ static int brcmf_pcie_read_otp(struct brcmf_pciedev_info *devinfo)
+ #define BRCMF_PCIE_FW_CLM	2
+ #define BRCMF_PCIE_FW_TXCAP	3
+ 
++/*
++ * HomePod WiFi diagnostics: /sys/kernel/debug/homepod-wifi/{state,fwcon}.
++ * Nothing here prints to the kernel log; read the files after a stall.
++ */
++static long long brcmf_pcie_hp_ago(u64 now, u64 t)
++{
++	return t ? (long long)div_u64(now - t, NSEC_PER_MSEC) : -1LL;
++}
++
++static void brcmf_pcie_hp_ring(struct seq_file *s,
++			       struct brcmf_pciedev_info *devinfo,
++			       struct brcmf_pcie_ringbuf *ring, const char *name)
++{
++	if (!ring || !ring->commonring.buf_addr)
++		return;
++	seq_printf(s, "ring %-14s id=%-3u depth=%-4u host r=%-4u w=%-4u | shared r=%-4u w=%-4u\n",
++		   name, ring->id, ring->commonring.depth,
++		   ring->commonring.r_ptr, ring->commonring.w_ptr,
++		   devinfo->read_ptr(devinfo, ring->r_idx_addr),
++		   devinfo->read_ptr(devinfo, ring->w_idx_addr));
++}
++
++static void brcmf_pcie_hp_link(struct seq_file *s, struct pci_dev *pdev,
++			       const char *who)
++{
++	u16 cmd = 0, sta = 0, lnkctl = 0, lnksta = 0, devsta = 0;
++	u32 l1ss = 0;
++	int pos;
++
++	if (!pdev)
++		return;
++	pci_read_config_word(pdev, PCI_COMMAND, &cmd);
++	pci_read_config_word(pdev, PCI_STATUS, &sta);
++	pcie_capability_read_word(pdev, PCI_EXP_LNKCTL, &lnkctl);
++	pcie_capability_read_word(pdev, PCI_EXP_LNKSTA, &lnksta);
++	pcie_capability_read_word(pdev, PCI_EXP_DEVSTA, &devsta);
++	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_L1SS);
++	if (pos)
++		pci_read_config_dword(pdev, pos + PCI_L1SS_CTL1, &l1ss);
++	seq_printf(s, "pci %-8s %s: cmd=0x%04x status=0x%04x devsta=0x%04x lnkctl=0x%04x (aspm %s%s%s) lnksta=0x%04x l1ss_ctl1=0x%08x\n",
++		   who, pci_name(pdev), cmd, sta, devsta, lnkctl,
++		   (lnkctl & PCI_EXP_LNKCTL_ASPM_L0S) ? "L0s " : "",
++		   (lnkctl & PCI_EXP_LNKCTL_ASPM_L1) ? "L1 " : "",
++		   (lnkctl & PCI_EXP_LNKCTL_ASPMC) ? "on" : "off",
++		   lnksta, l1ss);
++}
++
++static int brcmf_pcie_hp_state_show(struct seq_file *s, void *unused)
++{
++	static const char * const names[BRCMF_NROF_COMMON_MSGRINGS] = {
++		"h2d-ctrl-submit", "h2d-rxpost", "d2h-ctrl-cmpl",
++		"d2h-tx-cmpl", "d2h-rx-cmpl"
++	};
++	struct brcmf_pciedev_info *devinfo = s->private;
++	struct brcmf_pcie_shared_info *shared = &devinfo->shared;
++	struct brcmf_bus *bus = dev_get_drvdata(&devinfo->pdev->dev);
++	u64 now = ktime_get_ns();
++	u32 i;
++
++	seq_printf(s, "state=%s in_irq=%d now=%llu ms\n",
++		   devinfo->state == BRCMFMAC_PCIE_STATE_UP ? "UP" : "DOWN",
++		   devinfo->in_irq, div_u64(now, NSEC_PER_MSEC));
++	if (devinfo->state != BRCMFMAC_PCIE_STATE_UP || !devinfo->tcm)
++		return 0;
++
++	seq_printf(s, "irq: threads=%llu (last %lld ms ago, status 0x%x) doorbells=%llu mailboxint=0x%x mailboxmask=0x%x\n",
++		   devinfo->hp.irqs, brcmf_pcie_hp_ago(now, devinfo->hp.t_irq),
++		   devinfo->hp.last_intstatus, devinfo->hp.doorbells,
++		   brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxint),
++		   brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxmask));
++	seq_printf(s, "mailbox: ds_enter_req=%llu (last %lld ms ago, answer mode %u) ds_exit=%llu d3_ack=%llu fw_halt=%llu last=0x%x (%lld ms ago) pending d2h=0x%x h2d=0x%x\n",
++		   devinfo->hp.mb_ds_req,
++		   brcmf_pcie_hp_ago(now, devinfo->hp.t_ds_req), brcmf_pcie_ds,
++		   devinfo->hp.mb_ds_exit, devinfo->hp.mb_d3_ack,
++		   devinfo->hp.mb_fwhalt, devinfo->hp.mb_last,
++		   brcmf_pcie_hp_ago(now, devinfo->hp.t_mb),
++		   brcmf_pcie_read_tcm32(devinfo, shared->dtoh_mb_data_addr),
++		   brcmf_pcie_read_tcm32(devinfo, shared->htod_mb_data_addr));
++	seq_printf(s, "shared: ver=%u flags=0x%x max_rxbufpost=%u rx_dataoffset=%u max_flowrings=%u dma_idx_sz=%u idxbuf_iova=0x%llx\n",
++		   shared->version, shared->flags, shared->max_rxbufpost,
++		   shared->rx_dataoffset, shared->max_flowrings,
++		   devinfo->dma_idx_sz, (u64)devinfo->idxbuf_dmahandle);
++	brcmf_pcie_hp_link(s, devinfo->pdev, "wifi");
++	brcmf_pcie_hp_link(s, pci_upstream_bridge(devinfo->pdev), "rootport");
++
++	for (i = 0; i < BRCMF_NROF_COMMON_MSGRINGS; i++)
++		brcmf_pcie_hp_ring(s, devinfo, shared->commonrings[i],
++				   names[i]);
++	if (shared->flowrings)
++		for (i = 0; i < shared->max_flowrings; i++) {
++			struct brcmf_pcie_ringbuf *ring = &shared->flowrings[i];
++
++			if (ring->commonring.r_ptr || ring->commonring.w_ptr)
++				brcmf_pcie_hp_ring(s, devinfo, ring, "h2d-flowring");
++		}
++
++	if (shared->console.base_addr)
++		seq_printf(s, "fwcon: base=0x%x buf=0x%x size=%u write_idx=%u\n",
++			   shared->console.base_addr, shared->console.buf_addr,
++			   shared->console.bufsize,
++			   brcmf_pcie_read_tcm32(devinfo,
++					shared->console.base_addr +
++					BRCMF_CONSOLE_WRITEIDX_OFFSET));
++	else
++		seq_puts(s, "fwcon: no firmware console\n");
++
++	if (bus && bus->drvr)
++		brcmf_msgbuf_dump_state(bus->drvr, s);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(brcmf_pcie_hp_state);
++
++/* Whole firmware console ring, oldest text first. */
++static int brcmf_pcie_hp_fwcon_show(struct seq_file *s, void *unused)
++{
++	struct brcmf_pciedev_info *devinfo = s->private;
++	struct brcmf_pcie_console *console = &devinfo->shared.console;
++	u32 size, widx, i;
++	u8 *buf;
++
++	if (devinfo->state != BRCMFMAC_PCIE_STATE_UP || !devinfo->tcm ||
++	    !console->base_addr)
++		return 0;
++	size = console->bufsize;
++	if (!size || size > SZ_256K ||
++	    (u64)console->buf_addr + size > devinfo->tcm_size)
++		return 0;
++	buf = kvmalloc(size, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++	widx = brcmf_pcie_read_tcm32(devinfo, console->base_addr +
++				     BRCMF_CONSOLE_WRITEIDX_OFFSET);
++	if (widx >= size)
++		widx = 0;
++	memcpy_fromio(buf, devinfo->tcm + console->buf_addr, size);
++	for (i = 0; i < size; i++) {
++		u8 ch = buf[(widx + i) % size];
++
++		if (ch == '\n' || (ch >= 0x20 && ch < 0x7f))
++			seq_putc(s, ch);
++	}
++	seq_putc(s, '\n');
++	kvfree(buf);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(brcmf_pcie_hp_fwcon);
++
++static void brcmf_pcie_hp_debugfs_add(struct brcmf_pciedev_info *devinfo)
++{
++	debugfs_lookup_and_remove("homepod-wifi", NULL);
++	devinfo->hp.dir = debugfs_create_dir("homepod-wifi", NULL);
++	debugfs_create_file("state", 0400, devinfo->hp.dir, devinfo,
++			    &brcmf_pcie_hp_state_fops);
++	debugfs_create_file("fwcon", 0400, devinfo->hp.dir, devinfo,
++			    &brcmf_pcie_hp_fwcon_fops);
++}
++
++static void brcmf_pcie_hp_debugfs_remove(struct brcmf_pciedev_info *devinfo)
++{
++	debugfs_remove_recursive(devinfo->hp.dir);
++	devinfo->hp.dir = NULL;
++}
++
+ static void brcmf_pcie_setup(struct device *dev, int ret,
+ 			     struct brcmf_fw_request *fwreq)
+ {
+@@ -2179,6 +2528,46 @@ static void brcmf_pcie_setup(struct device *dev, int ret,
+ 	 */
+ 	brcmf_pcie_adjust_ramsize(devinfo, (u8 *)fw->data, fw->size);
+ 
++	/*
++	 * T7000 DART configuration from audioOS RE:
++	 *
++	 * 1) DART register at +0x24 had value 0x200700 from iBoot — do NOT
++	 *    overwrite it (build #73 accidentally destroyed it with 0x100).
++	 *
++	 * 2) Write fetch-config (0xe0303) to +0x20 (accepts 0x303, upper
++	 *    bits masked out by hardware).
++	 *
++	 * 3) Pre-map IOVA 0x01e0f000: the firmware's OWN init DMA uses
++	 *    this address.  Without a mapping the DART faults, which may
++	 *    put the BCM4357's DMA engine in a permanent error state that
++	 *    prevents subsequent ring DMA from completing.
++	 */
++	if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID) {
++		void __iomem *dart = ioremap(0x602002000, 0x200);
++
++		if (dart) {
++			/*
++			 * From audioOS RE: correct register offsets are:
++			 *   +0x20 = diag-config (Apple DT value: 0x100)
++			 *   +0x24 = page-table-pointer (DO NOT TOUCH)
++			 *   +0x30 = fetch-config (Apple DT value: 0xe0303)
++			 *
++			 * Build #73 corrupted +0x24 by writing diag-config
++			 * there.  Build #74 left it alone.  Now write to
++			 * the CORRECT offsets.
++			 */
++			writel(0x100,   dart + 0x20);  /* diag-config */
++			writel(0xe0303, dart + 0x30);  /* fetch-config */
++
++			iounmap(dart);
++		}
++
++		/* Pre-map of 0x01e0f000 removed — that IOVA is outside the
++		 * DAPF aperture (0x202000-0xFFAFFF) and always faults.
++		 * Removing it lets us see real DART faults from firmware DMA.
++		 */
++	}
++
+ 	ret = brcmf_pcie_download_fw_nvram(devinfo, fw, nvram, nvram_len);
+ 	if (ret)
+ 		goto fail;
+@@ -2217,11 +2606,32 @@ static void brcmf_pcie_setup(struct device *dev, int ret,
+ 
+ 	init_waitqueue_head(&devinfo->mbdata_resp_wait);
+ 
++	/* BCM4357: ring doorbell 0 early to wake the firmware, and make sure
++	 * bus mastering is on before the first DMA.
++	 */
++	if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID) {
++		u16 cmd;
++
++		brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
++		brcmf_pcie_write_reg32(devinfo, devinfo->reginfo->h2d_mailbox_0, 1);
++		pci_read_config_word(devinfo->pdev, PCI_COMMAND, &cmd);
++		if (!(cmd & PCI_COMMAND_MASTER)) {
++			pr_err("brcmfmac: bus master not set, forcing\n");
++			cmd |= PCI_COMMAND_MASTER;
++			pci_write_config_word(devinfo->pdev, PCI_COMMAND, cmd);
++		}
++		pr_info("brcmfmac: BCM4357 up: shared ver=%u flags=0x%x rxbufpost=%u flowrings=%u idx_sz=%u\n",
++			devinfo->shared.version, devinfo->shared.flags,
++			devinfo->shared.max_rxbufpost,
++			devinfo->shared.max_flowrings, devinfo->dma_idx_sz);
++	}
++
+ 	ret = brcmf_attach(&devinfo->pdev->dev);
+ 	if (ret)
+ 		goto fail;
+ 
+ 	brcmf_pcie_bus_console_read(devinfo, false);
++	brcmf_pcie_hp_debugfs_add(devinfo);
+ 
+ 	brcmf_pcie_fwcon_timer(devinfo, true);
+ 
+@@ -2230,6 +2640,54 @@ static void brcmf_pcie_setup(struct device *dev, int ret,
+ fail:
+ 	brcmf_err(bus, "Dongle setup failed\n");
+ 	brcmf_pcie_bus_console_read(devinfo, true);
++
++	/* Post-crash: compare per-4KB checksums to find corrupted regions */
++	if (devinfo->fw_blk_count) {
++		u32 rambase = devinfo->ci->rambase;
++		u32 blk, corrupted = 0;
++		dev_info(&devinfo->pdev->dev,
++			 "Post-crash: checking %u firmware blocks for corruption:\n",
++			 devinfo->fw_blk_count);
++		for (blk = 0; blk < devinfo->fw_blk_count; blk++) {
++			u32 csum = 0, i;
++			u32 start = blk * 4096;
++			u32 end = min(start + 4096, devinfo->fw_size);
++			for (i = start; i < end; i += 4)
++				csum += ioread32(devinfo->tcm + rambase + i);
++			if (csum != devinfo->fw_blk_csum[blk]) {
++				u32 first_diff = 0xffffffff;
++				/* Find first differing word in this block */
++				for (i = start; i < end; i += 4) {
++					u32 val = ioread32(devinfo->tcm + rambase + i);
++					/* Recompute original from stored csum is hard,
++					 * so just dump the first few words of changed block */
++					if (first_diff == 0xffffffff) {
++						first_diff = i;
++					}
++				}
++				dev_err(&devinfo->pdev->dev,
++					"  CORRUPTED block %u (offset 0x%05x-0x%05x) csum was 0x%08x now 0x%08x\n",
++					blk, start, end - 1, devinfo->fw_blk_csum[blk], csum);
++				/* Dump first 32 bytes of corrupted block */
++				for (i = start; i < start + 32 && i < end; i += 4) {
++					u32 val = ioread32(devinfo->tcm + rambase + i);
++					dev_err(&devinfo->pdev->dev,
++						"    [0x%05x] = 0x%08x\n", i, val);
++				}
++				corrupted++;
++				if (corrupted >= 10)
++					break;
++			}
++		}
++		if (!corrupted)
++			dev_info(&devinfo->pdev->dev,
++				 "Post-crash: ALL firmware blocks intact! Corruption is in data/heap region only.\n");
++		else
++			dev_err(&devinfo->pdev->dev,
++				"Post-crash: %u of %u blocks corrupted\n",
++				corrupted, devinfo->fw_blk_count);
++	}
++
+ 	brcmf_fw_crashed(dev);
+ 	device_release_driver(dev);
+ }
+@@ -2519,6 +2977,8 @@ brcmf_pcie_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+ 	bus->ops = &brcmf_pcie_bus_ops;
+ 	bus->proto_type = BRCMF_PROTO_MSGBUF;
+ 	bus->chip = devinfo->coreid;
++	if (devinfo->ci && devinfo->ci->chip == BRCM_CC_4357_CHIP_ID)
++		bus->dma_bus_or = 0x80000000ULL;
+ 	bus->wowl_supported = pci_pme_capable(pdev, PCI_D3hot);
+ 	bus->fwvid = drvdata[id->driver_data].vendor;
+ 	devinfo->fwseed = drvdata[id->driver_data].fw_seed;
+@@ -2592,6 +3052,7 @@ brcmf_pcie_remove(struct pci_dev *pdev)
+ 		return;
+ 
+ 	devinfo = bus->bus_priv.pcie->devinfo;
++	brcmf_pcie_hp_debugfs_remove(devinfo);
+ 	brcmf_pcie_bus_console_read(devinfo, false);
+ 	brcmf_pcie_fwcon_timer(devinfo, false);
+ 
+@@ -2738,6 +3199,7 @@ static const struct pci_device_id brcmf_pcie_devid_table[] = {
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4354_RAW_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4355_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4356_DEVICE_ID, WCC),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_4357_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43567_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43570_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43570_RAW_DEVICE_ID, WCC),
+diff --git a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+index df3b67ba4..6a4a8ac28 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
++++ b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+@@ -30,6 +30,7 @@
+ #define BRCM_CC_43362_CHIP_ID		43362
+ #define BRCM_CC_4335_CHIP_ID		0x4335
+ #define BRCM_CC_4339_CHIP_ID		0x4339
++#define BRCM_CC_4347_CHIP_ID		0x4347
+ #define BRCM_CC_43430_CHIP_ID		43430
+ #define BRCM_CC_4345_CHIP_ID		0x4345
+ #define BRCM_CC_43454_CHIP_ID		43454
+@@ -39,12 +40,14 @@
+ #define BRCM_CC_4354_CHIP_ID		0x4354
+ #define BRCM_CC_4355_CHIP_ID		0x4355
+ #define BRCM_CC_4356_CHIP_ID		0x4356
++#define BRCM_CC_4357_CHIP_ID		0x4357
+ #define BRCM_CC_43566_CHIP_ID		43566
+ #define BRCM_CC_43567_CHIP_ID		43567
+ #define BRCM_CC_43569_CHIP_ID		43569
+ #define BRCM_CC_43570_CHIP_ID		43570
+ #define BRCM_CC_4358_CHIP_ID		0x4358
+ #define BRCM_CC_4359_CHIP_ID		0x4359
++#define BRCM_CC_4361_CHIP_ID		0x4361
+ #define BRCM_CC_43602_CHIP_ID		43602
+ #define BRCM_CC_4364_CHIP_ID		0x4364
+ #define BRCM_CC_4365_CHIP_ID		0x4365
+@@ -77,6 +80,7 @@
+ #define BRCM_PCIE_4354_RAW_DEVICE_ID	0x4354
+ #define BRCM_PCIE_4355_DEVICE_ID	0x43dc
+ #define BRCM_PCIE_4356_DEVICE_ID	0x43ec
++#define BRCM_PCIE_4357_DEVICE_ID	0x440a
+ #define BRCM_PCIE_43567_DEVICE_ID	0x43d3
+ #define BRCM_PCIE_43570_DEVICE_ID	0x43d9
+ #define BRCM_PCIE_43570_RAW_DEVICE_ID	0xaa31
+diff --git a/drivers/pci/controller/pcie-apple.c b/drivers/pci/controller/pcie-apple.c
+index c2cffc065..623453407 100644
+--- a/drivers/pci/controller/pcie-apple.c
++++ b/drivers/pci/controller/pcie-apple.c
+@@ -20,6 +20,7 @@
+ 
+ #include <linux/bitfield.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
+ #include <linux/kernel.h>
+ #include <linux/iopoll.h>
+ #include <linux/irqchip/chained_irq.h>
+@@ -137,6 +138,49 @@
+ #define PORT_MSIMAP_ENABLE	BIT(31)
+ #define PORT_MSIMAP_TARGET	GENMASK(7, 0)
+ 
++/*
++ * T7000 (A8). Reverse engineered from AppleT7000PCIe (audioOS 17.5).
++ *
++ * The per-port register block is the same IP as on T8103 for everything
++ * below 0x800 (LTSSM control, interrupts, MSI configuration). What T8103
++ * keeps at port + 0x800 (clocks, PERST) lives in the "common" block here
++ * ("rc" in the DT), one 0x80 sized slot per port starting at 0x100. There
++ * is one PHY for every two ports, and it is only reachable while the clocks
++ * of the first port of the pair are running.
++ */
++#define T7000_CORE_PHY_CLK(port)	(0x00040 + 0x10 * (port))
++#define   T7000_CORE_PHY_CLK_EN		BIT(0)
++#define T7000_CORE_PORT_APPCLK(port)	(0x00100 + 0x80 * (port))
++#define   T7000_CORE_PORT_APPCLK_EN	BIT(0)
++#define   T7000_CORE_PORT_APPCLK_AUXDIS	BIT(20)
++#define T7000_CORE_PORT_REFCLK(port)	(0x00108 + 0x80 * (port))
++#define   T7000_CORE_PORT_REFCLK_EN	BIT(0)
++#define   T7000_CORE_PORT_REFCLK_CGDIS	BIT(8)
++#define T7000_CORE_PORT_OFF(port)	(0x0010c + 0x80 * (port))
++#define   T7000_CORE_PORT_OFF_SET	BIT(0)
++#define T7000_CORE_PORT_PERST(port)	(0x00118 + 0x80 * (port))
++#define   T7000_CORE_PORT_PERST_OFF	BIT(0)
++#define T7000_CORE_PORT_DBG0(port)	(0x00800 + 0x40 * (port))
++#define T7000_CORE_PORT_DBG1(port)	(0x00810 + 0x40 * (port))
++#define T7000_CORE_PORT_CTL(port)	(0x00820 + 0x40 * (port))
++#define   T7000_CORE_PORT_CTL_RUN	0x3
++
++#define T7000_PHY_EXT_REFCLK		0x00c3c
++
++#define PORT_T7000_LINKSTS		0x00088
++#define   PORT_T7000_LINKSTS_UP		BIT(0)
++#define   PORT_T7000_LINKSTS_L2		BIT(6)
++#define PORT_T7000_PMETO		0x0008c
++#define PORT_T7000_INTMSK2		0x00114
++#define PORT_T7000_LINKPMGRSTS		0x00804
++#define   PORT_T7000_LINKPMGRSTS_LTSSM	GENMASK(14, 9)
++#define PORT_T7000_LINKCMDSTS		0x00808
++
++/* Fixed in hardware as far as we can tell; "msi-address" in Apple's DT */
++#define T7000_DOORBELL_ADDR		0xbffff000
++
++#define T7000_MAX_PHYS			2
++
+ /*
+  * The doorbell address is set to 0xfffff000, which by convention
+  * matches what MacOS does, and it is possible to use any other
+@@ -146,6 +190,9 @@
+  */
+ #define DOORBELL_ADDR		CONFIG_PCIE_APPLE_MSI_DOORBELL_ADDR
+ 
++struct apple_pcie;
++struct apple_pcie_port;
++
+ struct hw_info {
+ 	u32 phy_lane_ctl;
+ 	u32 port_msiaddr;
+@@ -154,9 +201,23 @@ struct hw_info {
+ 	u32 port_perst;
+ 	u32 port_rid2sid;
+ 	u32 port_msimap;
++	u32 port_linksts;
++	u32 port_linkcmdsts;
+ 	u32 max_rid2sid;
++	u32 msi_doorbell;
++	unsigned int link_timeout_ms;
++	int (*port_bringup)(struct apple_pcie *pcie,
++			    struct apple_pcie_port *port,
++			    struct gpio_desc *reset);
+ };
+ 
++static int apple_pcie_port_bringup(struct apple_pcie *pcie,
++				   struct apple_pcie_port *port,
++				   struct gpio_desc *reset);
++static int apple_pcie_t7000_port_bringup(struct apple_pcie *pcie,
++					 struct apple_pcie_port *port,
++					 struct gpio_desc *reset);
++
+ static const struct hw_info t8103_hw = {
+ 	.phy_lane_ctl		= PHY_LANE_CTL,
+ 	.port_msiaddr		= PORT_MSIADDR,
+@@ -165,7 +226,12 @@ static const struct hw_info t8103_hw = {
+ 	.port_perst		= PORT_PERST,
+ 	.port_rid2sid		= PORT_RID2SID,
+ 	.port_msimap		= 0,
++	.port_linksts		= PORT_LINKSTS,
++	.port_linkcmdsts	= PORT_LINKCMDSTS,
+ 	.max_rid2sid		= 64,
++	.msi_doorbell		= DOORBELL_ADDR,
++	.link_timeout_ms	= 100,
++	.port_bringup		= apple_pcie_port_bringup,
+ };
+ 
+ static const struct hw_info t602x_hw = {
+@@ -176,8 +242,33 @@ static const struct hw_info t602x_hw = {
+ 	.port_perst		= PORT_T602X_PERST,
+ 	.port_rid2sid		= PORT_T602X_RID2SID,
+ 	.port_msimap		= PORT_T602X_MSIMAP,
++	.port_linksts		= PORT_LINKSTS,
++	.port_linkcmdsts	= PORT_LINKCMDSTS,
+ 	/* 16 on t602x, guess for autodetect on future HW */
+ 	.max_rid2sid		= 512,
++	.msi_doorbell		= DOORBELL_ADDR,
++	.link_timeout_ms	= 100,
++	.port_bringup		= apple_pcie_port_bringup,
++};
++
++static const struct hw_info t7000_hw = {
++	/* The PHY is handled by apple_pcie_t7000_phy_init() */
++	.phy_lane_ctl		= 0,
++	/* No doorbell register: the address is not programmable */
++	.port_msiaddr		= 0,
++	.port_msiaddr_hi	= 0,
++	/* Clocks and PERST are in the common block */
++	.port_refclk		= 0,
++	.port_perst		= 0,
++	/* No RID to SID table, there is one DART (and one SID) per port */
++	.port_rid2sid		= 0,
++	.port_msimap		= 0,
++	.port_linksts		= PORT_T7000_LINKSTS,
++	.port_linkcmdsts	= PORT_T7000_LINKCMDSTS,
++	.max_rid2sid		= 0,
++	.msi_doorbell		= T7000_DOORBELL_ADDR,
++	.link_timeout_ms	= 500,
++	.port_bringup		= apple_pcie_t7000_port_bringup,
+ };
+ 
+ struct apple_pcie {
+@@ -190,6 +281,9 @@ struct apple_pcie {
+ 	struct completion	event;
+ 	struct irq_fwspec	fwspec;
+ 	u32			nvecs;
++	/* T7000 only */
++	void __iomem		*cfg_win;
++	void __iomem		*t7000_phy[T7000_MAX_PHYS];
+ };
+ 
+ struct apple_pcie_port {
+@@ -217,8 +311,10 @@ static void rmw_clear(u32 clr, void __iomem *addr)
+ 
+ static void apple_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+ {
+-	msg->address_hi = upper_32_bits(DOORBELL_ADDR);
+-	msg->address_lo = lower_32_bits(DOORBELL_ADDR);
++	struct apple_pcie *pcie = irq_data_get_irq_chip_data(data);
++
++	msg->address_hi = 0;
++	msg->address_lo = pcie->hw->msi_doorbell;
+ 	msg->data = data->hwirq;
+ }
+ 
+@@ -418,14 +514,15 @@ static int apple_pcie_port_setup_irq(struct apple_pcie_port *port)
+ 	/* Disable all interrupts */
+ 	writel_relaxed(~0, port->base + PORT_INTMSK);
+ 	writel_relaxed(~0, port->base + PORT_INTSTAT);
+-	writel_relaxed(~0, port->base + PORT_LINKCMDSTS);
++	writel_relaxed(~0, port->base + pcie->hw->port_linkcmdsts);
+ 
+ 	irq_set_chained_handler_and_data(irq, apple_port_irq_handler, port);
+ 
+ 	/* Configure MSI base address */
+ 	BUILD_BUG_ON(upper_32_bits(DOORBELL_ADDR));
+-	writel_relaxed(lower_32_bits(DOORBELL_ADDR),
+-		       port->base + pcie->hw->port_msiaddr);
++	if (pcie->hw->port_msiaddr)
++		writel_relaxed(pcie->hw->msi_doorbell,
++			       port->base + pcie->hw->port_msiaddr);
+ 	if (pcie->hw->port_msiaddr_hi)
+ 		writel_relaxed(0, port->base + pcie->hw->port_msiaddr_hi);
+ 
+@@ -550,6 +647,296 @@ static u32 apple_pcie_rid2sid_write(struct apple_pcie_port *port,
+ 	return readl_relaxed(port_rid2sid_addr(port, idx));
+ }
+ 
++static int apple_pcie_port_bringup(struct apple_pcie *pcie,
++				   struct apple_pcie_port *port,
++				   struct gpio_desc *reset)
++{
++	u32 stat;
++	int ret;
++
++	rmw_set(PORT_APPCLK_EN, port->base + PORT_APPCLK);
++
++	/* Assert PERST# before setting up the clock */
++	gpiod_set_value_cansleep(reset, 1);
++
++	ret = apple_pcie_setup_refclk(pcie, port);
++	if (ret < 0)
++		return ret;
++
++	/* The minimal Tperst-clk value is 100us (PCIe CEM r5.0, 2.9.2) */
++	usleep_range(100, 200);
++
++	/* Deassert PERST# */
++	rmw_set(PORT_PERST_OFF, port->base + pcie->hw->port_perst);
++	gpiod_set_value_cansleep(reset, 0);
++
++	/* Wait for 100ms after PERST# deassertion (PCIe r5.0, 6.6.1) */
++	msleep(100);
++
++	ret = readl_relaxed_poll_timeout(port->base + PORT_STATUS, stat,
++					 stat & PORT_STATUS_READY, 100, 250000);
++	if (ret < 0) {
++		dev_err(pcie->dev, "port %pOF ready wait timeout\n", port->np);
++		return ret;
++	}
++
++	if (pcie->hw->port_refclk)
++		rmw_clear(PORT_REFCLK_CGDIS, port->base + pcie->hw->port_refclk);
++	else
++		rmw_set(PHY_LANE_CFG_REFCLKCGEN, port->phy + PHY_LANE_CFG);
++
++	rmw_clear(PORT_APPCLK_CGDIS, port->base + PORT_APPCLK);
++
++	return 0;
++}
++
++/*
++ * T7000: program the board specific PHY settings. Apple does this once per
++ * PHY when the controller is powered up, with the clocks of the first port
++ * of the pair (and nothing else) running, and puts everything back
++ * afterwards.
++ *
++ * "apple,phy-settings" is Apple's "phyN-settings" property: <offset value>
++ * pairs. Only PHY 0 is described for now.
++ */
++static int apple_pcie_t7000_phy_init(struct apple_pcie *pcie, unsigned int phy)
++{
++	struct platform_device *platform = to_platform_device(pcie->dev);
++	struct device_node *np = pcie->dev->of_node;
++	unsigned int first = phy * 2;
++	void __iomem *base;
++	char name[16];
++	int i, n;
++
++	if (phy >= T7000_MAX_PHYS)
++		return -EINVAL;
++
++	if (pcie->t7000_phy[phy])
++		return 0;
++
++	snprintf(name, sizeof(name), "phy%u", phy);
++	base = devm_platform_ioremap_resource_byname(platform, name);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	pcie->t7000_phy[phy] = base;
++
++	rmw_set(T7000_CORE_PHY_CLK_EN, pcie->base + T7000_CORE_PHY_CLK(first));
++	rmw_set(T7000_CORE_PORT_APPCLK_EN,
++		pcie->base + T7000_CORE_PORT_APPCLK(first));
++	rmw_set(T7000_CORE_PORT_PERST_OFF,
++		pcie->base + T7000_CORE_PORT_PERST(first));
++
++	if (of_property_read_bool(np, "apple,phy-external-refclk")) {
++		writel_relaxed(1, base + T7000_PHY_EXT_REFCLK);
++		readl_relaxed(base + T7000_PHY_EXT_REFCLK);
++	}
++
++	n = phy ? 0 : of_property_count_u32_elems(np, "apple,phy-settings");
++	for (i = 0; i + 1 < n; i += 2) {
++		u32 off, val;
++
++		if (of_property_read_u32_index(np, "apple,phy-settings", i, &off) ||
++		    of_property_read_u32_index(np, "apple,phy-settings", i + 1, &val))
++			break;
++		if (off > 0xffc || (off & 3)) {
++			dev_warn(pcie->dev, "bad PHY setting offset %#x\n", off);
++			continue;
++		}
++
++		writel_relaxed(val, base + off);
++		/* Apple reads every setting back */
++		readl_relaxed(base + off);
++	}
++
++	rmw_clear(T7000_CORE_PORT_PERST_OFF,
++		  pcie->base + T7000_CORE_PORT_PERST(first));
++	rmw_clear(T7000_CORE_PORT_APPCLK_EN,
++		  pcie->base + T7000_CORE_PORT_APPCLK(first));
++	rmw_clear(T7000_CORE_PHY_CLK_EN, pcie->base + T7000_CORE_PHY_CLK(first));
++
++	return 0;
++}
++
++/*
++ * T7000: the root port's configuration space is used before the bus is
++ * scanned, to limit the link speed like Apple's driver does.
++ */
++static void apple_pcie_t7000_limit_speed(struct apple_pcie *pcie,
++					 struct apple_pcie_port *port)
++{
++	void __iomem *cfg = pcie->cfg_win + (PCI_DEVFN(port->idx, 0) << 12);
++	u32 speed, lnkcap2;
++	int ttl = 48;
++	u8 pos, cap = 0;
++	u16 lnkctl2;
++
++	if (of_property_read_u32(port->np, "max-link-speed", &speed) &&
++	    of_property_read_u32(pcie->dev->of_node, "max-link-speed", &speed))
++		return;
++
++	if (!speed || speed > 4)
++		return;
++
++	if (!(readw_relaxed(cfg + PCI_STATUS) & PCI_STATUS_CAP_LIST))
++		goto no_cap;
++
++	pos = readb_relaxed(cfg + PCI_CAPABILITY_LIST) & ~3;
++	while (pos >= 0x40 && ttl--) {
++		if (readb_relaxed(cfg + pos + PCI_CAP_LIST_ID) == PCI_CAP_ID_EXP) {
++			cap = pos;
++			break;
++		}
++		pos = readb_relaxed(cfg + pos + PCI_CAP_LIST_NEXT) & ~3;
++	}
++
++	if (!cap)
++		goto no_cap;
++
++	/* Bits 7:1 of LNKCAP2 are the supported link speeds vector */
++	lnkcap2 = readl_relaxed(cfg + cap + PCI_EXP_LNKCAP2);
++	while (speed > 1 && lnkcap2 && !(lnkcap2 & BIT(speed)))
++		speed--;
++
++	lnkctl2 = readw_relaxed(cfg + cap + PCI_EXP_LNKCTL2);
++	lnkctl2 &= ~PCI_EXP_LNKCTL2_TLS;
++	lnkctl2 |= speed;
++	writew_relaxed(lnkctl2, cfg + cap + PCI_EXP_LNKCTL2);
++
++	dev_dbg(pcie->dev, "%pOF: target link speed %u (LNKCAP2 %#x)\n",
++		port->np, speed, lnkcap2);
++	return;
++
++no_cap:
++	dev_warn(pcie->dev, "%pOF: no PCIe capability in the root port (vid:did %#x), link speed not limited\n",
++		 port->np, readl_relaxed(cfg + PCI_VENDOR_ID));
++}
++
++/*
++ * T7000: "apple,port-tunables" is Apple's "apcie-config-tunables" property:
++ * <offset mask value> triplets for the port register block.
++ */
++static void apple_pcie_t7000_port_tunables(struct apple_pcie *pcie,
++					   struct apple_pcie_port *port)
++{
++	struct device_node *np = pcie->dev->of_node;
++	int i, n;
++
++	n = of_property_count_u32_elems(np, "apple,port-tunables");
++	for (i = 0; i + 2 < n; i += 3) {
++		u32 off, mask, val, reg;
++
++		if (of_property_read_u32_index(np, "apple,port-tunables", i, &off) ||
++		    of_property_read_u32_index(np, "apple,port-tunables", i + 1, &mask) ||
++		    of_property_read_u32_index(np, "apple,port-tunables", i + 2, &val))
++			break;
++		if (off > 0xffc || (off & 3)) {
++			dev_warn(pcie->dev, "bad port tunable offset %#x\n", off);
++			continue;
++		}
++
++		reg = readl_relaxed(port->base + off);
++		writel_relaxed((reg & ~mask) | val, port->base + off);
++	}
++}
++
++static int apple_pcie_t7000_port_bringup(struct apple_pcie *pcie,
++					 struct apple_pcie_port *port,
++					 struct gpio_desc *reset)
++{
++	struct device_node *np = pcie->dev->of_node;
++	unsigned int idx = port->idx;
++	u32 delay = 100;
++	int ret;
++
++	/* Keep the endpoint in reset until the port is ready */
++	gpiod_set_value_cansleep(reset, 1);
++
++	/*
++	 * On HomePod (B238a), WiFi REG_ON is PMIC GPIO 5 on the Dialog
++	 * D2186 at I2C0 address 0x74. Drive it HIGH so the BCM4357 is
++	 * powered before link training. This is a board-specific hack;
++	 * a proper solution would use a regulator-fixed node.
++	 */
++	if (of_machine_is_compatible("apple,b238a")) {
++		struct i2c_adapter *pmu_bus;
++		struct device_node *i2c_np;
++
++		i2c_np = of_find_compatible_node(NULL, NULL, "apple,t7000-i2c");
++		if (i2c_np) {
++			pmu_bus = of_find_i2c_adapter_by_node(i2c_np);
++			of_node_put(i2c_np);
++			if (pmu_bus) {
++				/* GPIO 5 = REG_ON (chip power) */
++				u8 gpio5_set[] = { 0x04, 0x0a, 0x0b };
++				u8 gpio5_cfg[] = { 0x04, 0x0b, 0x12 };
++				/* GPIO 7 = WLAN enable (may control xtal/PLL) */
++				u8 gpio7_set[] = { 0x04, 0x0e, 0x0b };
++				u8 gpio7_cfg[] = { 0x04, 0x0f, 0x12 };
++				struct i2c_msg msgs[] = {
++					{ .addr = 0x74, .len = 3, .buf = gpio5_set },
++					{ .addr = 0x74, .len = 3, .buf = gpio5_cfg },
++					{ .addr = 0x74, .len = 3, .buf = gpio7_set },
++					{ .addr = 0x74, .len = 3, .buf = gpio7_cfg },
++				};
++				if (i2c_transfer(pmu_bus, msgs, 4) == 4)
++					dev_info(pcie->dev, "WiFi REG_ON (GPIO5) + WLAN_EN (GPIO7) driven HIGH\n");
++				else if (i2c_transfer(pmu_bus, msgs, 2) == 2)
++					dev_info(pcie->dev, "WiFi REG_ON (GPIO5) driven HIGH (GPIO7 failed)\n");
++				else
++					dev_warn(pcie->dev, "WiFi PMIC I2C write failed\n");
++				i2c_put_adapter(pmu_bus);
++				/* Wait for WiFi chip + crystal power-up */
++				msleep(100);
++			}
++		}
++	}
++
++	ret = apple_pcie_t7000_phy_init(pcie, idx / 2);
++	if (ret)
++		return ret;
++
++	/* Port reset on, then the reference clock (unless it is external) */
++	rmw_clear(T7000_CORE_PORT_PERST_OFF,
++		  pcie->base + T7000_CORE_PORT_PERST(idx));
++	if (!of_property_read_bool(np, "apple,phy-external-refclk"))
++		rmw_set(T7000_CORE_PORT_REFCLK_EN,
++			pcie->base + T7000_CORE_PORT_REFCLK(idx));
++
++	usleep_range(100, 200);
++
++	rmw_clear(T7000_CORE_PORT_OFF_SET, pcie->base + T7000_CORE_PORT_OFF(idx));
++	rmw_set(T7000_CORE_PORT_APPCLK_EN,
++		pcie->base + T7000_CORE_PORT_APPCLK(idx));
++	if (of_property_read_bool(np, "apple,muxed-auxclk-auto-dis"))
++		rmw_set(T7000_CORE_PORT_APPCLK_AUXDIS,
++			pcie->base + T7000_CORE_PORT_APPCLK(idx));
++
++	/* Apple's "t-refclk-to-perst", in microseconds */
++	of_property_read_u32(port->np, "apple,t-refclk-to-perst-us", &delay);
++	usleep_range(delay, delay + 100);
++
++	/* Port reset off */
++	rmw_set(T7000_CORE_PORT_PERST_OFF,
++		pcie->base + T7000_CORE_PORT_PERST(idx));
++
++	writel_relaxed(T7000_CORE_PORT_CTL_RUN,
++		       pcie->base + T7000_CORE_PORT_CTL(idx));
++
++	/* Allow the reference clock to be gated */
++	rmw_clear(T7000_CORE_PORT_REFCLK_CGDIS,
++		  pcie->base + T7000_CORE_PORT_REFCLK(idx));
++
++	/* The root port's configuration space is usable from here on */
++	apple_pcie_t7000_limit_speed(pcie, port);
++	apple_pcie_t7000_port_tunables(pcie, port);
++
++	/* Apple clears this next to the interrupt mask, meaning unknown */
++	writel_relaxed(0, port->base + PORT_T7000_INTMSK2);
++
++	return 0;
++}
++
+ static int apple_pcie_setup_port(struct apple_pcie *pcie,
+ 				 struct device_node *np)
+ {
+@@ -594,50 +981,30 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
+ 	if (IS_ERR(port->base))
+ 		return PTR_ERR(port->base);
+ 
+-	snprintf(name, sizeof(name), "phy%d", port->idx);
+-	res = platform_get_resource_byname(platform, IORESOURCE_MEM, name);
+-	if (res)
+-		port->phy = devm_ioremap_resource(&platform->dev, res);
+-	else
+-		port->phy = pcie->base + CORE_PHY_DEFAULT_BASE(port->idx);
+-
+-	rmw_set(PORT_APPCLK_EN, port->base + PORT_APPCLK);
+-
+-	/* Assert PERST# before setting up the clock */
+-	gpiod_set_value_cansleep(reset, 1);
+-
+-	ret = apple_pcie_setup_refclk(pcie, port);
+-	if (ret < 0)
+-		return ret;
+-
+-	/* The minimal Tperst-clk value is 100us (PCIe CEM r5.0, 2.9.2) */
+-	usleep_range(100, 200);
+-
+-	/* Deassert PERST# */
+-	rmw_set(PORT_PERST_OFF, port->base + pcie->hw->port_perst);
+-	gpiod_set_value_cansleep(reset, 0);
+-
+-	/* Wait for 100ms after PERST# deassertion (PCIe r5.0, 6.6.1) */
+-	msleep(100);
+-
+-	ret = readl_relaxed_poll_timeout(port->base + PORT_STATUS, stat,
+-					 stat & PORT_STATUS_READY, 100, 250000);
+-	if (ret < 0) {
+-		dev_err(pcie->dev, "port %pOF ready wait timeout\n", np);
+-		return ret;
++	if (pcie->hw->port_bringup != apple_pcie_t7000_port_bringup) {
++		snprintf(name, sizeof(name), "phy%d", port->idx);
++		res = platform_get_resource_byname(platform, IORESOURCE_MEM, name);
++		if (res)
++			port->phy = devm_ioremap_resource(&platform->dev, res);
++		else
++			port->phy = pcie->base + CORE_PHY_DEFAULT_BASE(port->idx);
+ 	}
+ 
+-	if (pcie->hw->port_refclk)
+-		rmw_clear(PORT_REFCLK_CGDIS, port->base + pcie->hw->port_refclk);
+-	else
+-		rmw_set(PHY_LANE_CFG_REFCLKCGEN, port->phy + PHY_LANE_CFG);
+-
+-	rmw_clear(PORT_APPCLK_CGDIS, port->base + PORT_APPCLK);
++	ret = pcie->hw->port_bringup(pcie, port, reset);
++	if (ret)
++		return ret;
+ 
+ 	ret = apple_pcie_port_setup_irq(port);
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * On T7000 the endpoint is only released once the port interrupts
++	 * are set up, right before link training is started.
++	 */
++	if (pcie->hw->port_bringup == apple_pcie_t7000_port_bringup)
++		gpiod_set_value_cansleep(reset, 0);
++
+ 	/* Reset all RID/SID mappings, and check for RAZ/WI registers */
+ 	for (i = 0; i < pcie->hw->max_rid2sid; i++) {
+ 		if (apple_pcie_rid2sid_write(port, i, 0xbad1d) != 0xbad1d)
+@@ -660,8 +1027,31 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
+ 
+ 	writel_relaxed(PORT_LTSSMCTL_START, port->base + PORT_LTSSMCTL);
+ 
+-	if (!wait_for_completion_timeout(&pcie->event, HZ / 10))
+-		dev_warn(pcie->dev, "%pOF link didn't come up\n", np);
++	if (!wait_for_completion_timeout(&pcie->event,
++				msecs_to_jiffies(pcie->hw->link_timeout_ms))) {
++		stat = readl_relaxed(port->base + pcie->hw->port_linksts);
++		if (pcie->hw->port_bringup == apple_pcie_t7000_port_bringup)
++			dev_warn(pcie->dev,
++				 "%pOF link didn't come up (linksts %#x pmgrsts %#x ltssm %#lx linkcmdsts %#x intstat %#x dbg %#x/%#x)\n",
++				 np, stat,
++				 readl_relaxed(port->base + PORT_T7000_LINKPMGRSTS),
++				 FIELD_GET(PORT_T7000_LINKPMGRSTS_LTSSM,
++					   readl_relaxed(port->base + PORT_T7000_LINKPMGRSTS)),
++				 readl_relaxed(port->base + PORT_T7000_LINKCMDSTS),
++				 readl_relaxed(port->base + PORT_INTSTAT),
++				 readl_relaxed(pcie->base + T7000_CORE_PORT_DBG0(port->idx)),
++				 readl_relaxed(pcie->base + T7000_CORE_PORT_DBG1(port->idx)));
++		else
++			dev_warn(pcie->dev, "%pOF link didn't come up\n", np);
++	} else if (pcie->hw->port_bringup == apple_pcie_t7000_port_bringup) {
++		/*
++		 * The generic bring-up sleeps before starting the LTSSM,
++		 * here the endpoint has only just been let out of reset.
++		 * Give it the 100ms it is owed before the first
++		 * configuration request (PCIe r5.0, 6.6.1).
++		 */
++		msleep(100);
++	}
+ 
+ 	return 0;
+ }
+@@ -765,6 +1155,10 @@ static int apple_pcie_enable_device(struct pci_host_bridge *bridge, struct pci_d
+ 	dev_dbg(&pdev->dev, "added to bus %s, index %d\n",
+ 		pci_name(pdev->bus->self), port->idx);
+ 
++	/* No RID to SID table (T7000): nothing to program */
++	if (!port->pcie->hw->max_rid2sid)
++		return 0;
++
+ 	err = of_map_iommu_id(port->pcie->dev->of_node, rid, &iommu_spec);
+ 	if (err)
+ 		return err;
+@@ -825,6 +1219,8 @@ static int apple_pcie_init(struct pci_config_window *cfg)
+ 	if (WARN_ON(!pcie))
+ 		return -ENOENT;
+ 
++	pcie->cfg_win = cfg->win;
++
+ 	for_each_available_child_of_node_scoped(dev->of_node, of_port) {
+ 		ret = apple_pcie_setup_port(pcie, of_port);
+ 		if (ret) {
+@@ -879,6 +1275,7 @@ static int apple_pcie_probe(struct platform_device *pdev)
+ 
+ static const struct of_device_id apple_pcie_of_match[] = {
+ 	{ .compatible = "apple,t6020-pcie",	.data = &t602x_hw },
++	{ .compatible = "apple,t7000-pcie",	.data = &t7000_hw },
+ 	{ .compatible = "apple,pcie",		.data = &t8103_hw },
+ 	{ }
+ };
+diff --git a/drivers/video/backlight/apple_pmic_bl.c b/drivers/video/backlight/apple_pmic_bl.c
+index 64d472512..ae891a6e5 100644
+--- a/drivers/video/backlight/apple_pmic_bl.c
++++ b/drivers/video/backlight/apple_pmic_bl.c
+@@ -65,6 +65,8 @@ static int apple_pmic_bl_get_brightness(struct backlight_device *bl)
+ 		case PMIC_TYPE_ARIA:
+ 			return ((cmd[1] & 7) << 8) | (cmd[0] & 0xff);
+ 	}
++
++	return -EINVAL;
+ }
+ 
+ static const struct backlight_ops apple_pmic_bl_ops = {

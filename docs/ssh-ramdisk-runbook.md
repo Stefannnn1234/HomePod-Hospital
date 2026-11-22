@@ -52,8 +52,17 @@ ls -la /dev/disk*                  # find the syscfg partition
 #   a diag/syscfg tool on the ramdisk, or ioreg AppleDiagnosticDataSysCfg
 ```
 Once you know the command that prints the raw SysCfg blob (and the one that
-writes it back), set `dumpCommand`/`sinkCommand` and we're done — the transport
-already base64-wraps both directions.
+writes it back), set `dumpCommand`/`sinkCommand` and we're done.
+
+**Tools on the ramdisk.** The 17.5 SSH ramdisk (Apple restore ramdisk + SSHRD
+`atvssh` overlay; `/bin/sh` is bash 3.2) has no `base64`, `awk`, `tr`, `sort`,
+`od`, `strings`, `timeout` or `/tmp` (only `/private/var/tmp`). The `hpdiag-*`
+scripts use only shell builtins plus `sed`, `grep`, `head`, `cut`, `wc`,
+`hexdump`, `expr`, `dd`, `ls`, `mount`, `date` and `ioreg`; the app pushes them to
+`/private/var/tmp/hpdiag`, stages blobs in `/private/var/tmp`, and binary dumps
+come back as `xxd -p` hex. The legacy `base64` paths in `SSHRamdiskTransport`
+(the generic `dumpCommand` read with no `sysCfgProperty`, and the `sinkCommand`
+write) still cannot work there.
 
 ## 3. Prove the read
 Read SysCfg on the known-good pod → serial + MACs show → **compare the serial to

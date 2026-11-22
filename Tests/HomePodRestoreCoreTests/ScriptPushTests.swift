@@ -70,13 +70,55 @@ final class ScriptPushTests: XCTestCase {
         // rest append, and only the last one reports the size.
         let split = DiagCommands.scriptPushCommands(name: script.name, content: script.content, budget: 16)
         XCTAssertGreaterThan(split.count, 1)
-        XCTAssertTrue(split[0].contains("' > /tmp/hpdiag/hpdiag-nand"))
-        XCTAssertTrue(split[1].contains("' >> /tmp/hpdiag/hpdiag-nand"))
+        XCTAssertTrue(split[0].contains("' > /private/var/tmp/hpdiag/hpdiag-nand"))
+        XCTAssertTrue(split[1].contains("' >> /private/var/tmp/hpdiag/hpdiag-nand"))
         XCTAssertFalse(split[0].contains(DiagCommands.pushedMarkerPrefix))
         XCTAssertTrue(split[split.count - 1].contains(DiagCommands.pushedMarkerPrefix))
         var back = Data()
         for part in split { back.append(Self.printfFormat(in: part).flatMap(Self.decodePrintfFormat) ?? Data()) }
         XCTAssertEqual(back, script.content)
+    }
+
+    /// The SSH ramdisk's root has no /tmp (only /private/var/tmp and
+    /// /private/var/root), so neither the script push nor blob staging may use it.
+    func testNothingIsPushedOrStagedUnderTmp() {
+        XCTAssertEqual(DiagCommands.pushDirectory, "/private/var/tmp/hpdiag")
+        XCTAssertFalse(DiagCommands.pushDirectories.contains { $0.hasPrefix("/tmp") })
+        XCTAssertFalse(DiagCommands.path.split(separator: ":").contains { $0.hasPrefix("/tmp") })
+        XCTAssertFalse(DiagCommands.scriptCheck(names: ["hpdiag-nand"]).contains(" /tmp/"))
+        XCTAssertFalse(EffaceableLockerSink.Settings().stagePath.hasPrefix("/tmp"))
+        XCTAssertFalse(DiagsKextSink.Settings().stagePath.hasPrefix("/tmp"))
+    }
+
+    /// The tool check names only tools the scripts still call, all of which the
+    /// ramdisk has; the ones it lacks were rewritten out of the scripts.
+    func testScriptToolCheckListsNoToolTheRamdiskLacks() {
+        for tool in ["awk", "tr", "sort", "od", "strings", "base64", "timeout"] {
+            XCTAssertFalse(DiagCommands.scriptRequiredTools.contains(tool), tool)
+        }
+        XCTAssertTrue(DiagCommands.scriptCheck(names: ["hpdiag-nand"])
+            .contains("for t in ioreg dd grep sed head cut wc hexdump expr; do"))
+    }
+
+    /// `dumpBinary` moves bytes as `xxd -p` hex (no base64 on the pod).
+    func testHexDumpDecodesXxdOutput() {
+        var data = Data((0...255).map { UInt8($0) })
+        data.append(contentsOf: [0x00, 0xff, 0x0a])
+        let hex = data.map { String(format: "%02x", $0) }.joined()
+        // xxd -p wraps every 60 hex digits; SSH output may carry CRs.
+        var wrapped = ""
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 60, limitedBy: hex.endIndex) ?? hex.endIndex
+            wrapped += String(hex[i..<j]) + "\r\n"
+            i = j
+        }
+        XCTAssertEqual(SSHRamdiskTransport.decodeHexDump(wrapped), data)
+        XCTAssertEqual(SSHRamdiskTransport.decodeHexDump("DEADbeef"), Data([0xde, 0xad, 0xbe, 0xef]))
+        XCTAssertEqual(SSHRamdiskTransport.decodeHexDump(""), Data())
+        XCTAssertNil(SSHRamdiskTransport.decodeHexDump("abc"))        // odd number of digits
+        XCTAssertNil(SSHRamdiskTransport.decodeHexDump("ab cd zz"))   // not hex
+        XCTAssertNil(SSHRamdiskTransport.decodeHexDump("aGVsbG8="))   // base64 is not hex
     }
 
     func testFailureMessageTellsARemoteFailureFromADeadLink() {
@@ -165,14 +207,14 @@ final class ScriptPushTests: XCTestCase {
     }
 
     func testPushRetriesAScriptOnce() async {
-        let pod = FakePod(directory: "/tmp/hpdiag", failFirstPushes: 1)
+        let pod = FakePod(directory: "/private/var/root/hpdiag", failFirstPushes: 1)
         let result = await FullDiagnosticsController.pushDiagnosticScripts(Self.scripts, via: pod)
         XCTAssertEqual(result, .pushed(["hpdiag-accel", "hpdiag-nand"]))
-        XCTAssertEqual(pod.files["/tmp/hpdiag/hpdiag-accel"], Self.scripts[0].content)
+        XCTAssertEqual(pod.files["/private/var/root/hpdiag/hpdiag-accel"], Self.scripts[0].content)
     }
 
     func testPushGivesUpAfterTwoFailuresAndSaysWhy() async {
-        let pod = FakePod(directory: "/tmp/hpdiag", failFirstPushes: 2)
+        let pod = FakePod(directory: "/private/var/root/hpdiag", failFirstPushes: 2)
         let result = await FullDiagnosticsController.pushDiagnosticScripts(Self.scripts, via: pod)
         guard case .failed(let pushed, let message) = result else { return XCTFail("expected a failure") }
         XCTAssertTrue(pushed.isEmpty)

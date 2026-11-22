@@ -258,7 +258,7 @@ the woofer. Before any playback:
   unit passed.
 - Workflow: `diags-boot.md`, "NAND Replacement Workflow".
 - A raw SysCfg baseline of the working pod is saved at
-  `~/homepod/syscfg-baseline-CC4VKKTQHQK8.bin`.
+  `~/homepod/syscfg-baseline-SERIAL000001.bin`.
 
 ---
 
@@ -284,8 +284,8 @@ the woofer. Before any playback:
 
 | Item | Value |
 |------|-------|
-| ECID | `00092951386A6F26` |
-| Serial | `CC4VKKTQHQK8` |
+| ECID | `0000000000000001` |
+| Serial | `SERIAL000001` |
 | Board rev | `0x5` |
 | Model | `MQHW2` (Space Gray), region `LL/A` |
 | SEP | Working |
@@ -301,8 +301,8 @@ the woofer. Before any playback:
 
 | Item | Value |
 |------|-------|
-| ECID | `00165CD928EA60A6` [verified] |
-| Serial | `DLXVVMWEJ265` [verified] |
+| ECID | `0000000000000002` [verified] |
+| Serial | `SERIAL000002` [verified] |
 | Board rev | `0xa` [session] |
 | iBoot | `iBoot-11881.80.57` during the restore attempt; `iBoot-13822.80.422.0.2` on the following boot [verified] |
 | Fault | `SEP ROM boot panic` at `load_sep_os` [verified] |
@@ -331,7 +331,7 @@ the woofer. Before any playback:
 | `~/ProtoPod/HomePod_rdisk0.img` | ProtoPod system image, 16 GB (also `rdisk1`, `rdisk2`, and `.gz` originals) |
 | `/tmp/SmartIOFirmwareT7000.bin` | SmartIO firmware, 493,516 bytes — **volatile location** |
 | `~/homepod/SYSCFG_WRITE_FINDINGS.md` | SysCfg write research notes |
-| `~/homepod/syscfg-baseline-CC4VKKTQHQK8.bin` | SysCfg baseline of the working pod |
+| `~/homepod/syscfg-baseline-SERIAL000001.bin` | SysCfg baseline of the working pod |
 | `~/homepod/SSHRD_Script/`, `~/homepod/keys/` | SSH ramdisk tooling and keys |
 
 ---

@@ -10,7 +10,7 @@ unit's own serial / Wi-Fi MAC / BT MAC and the pod can activate.
 
 - **Reading SysCfg is DONE and hardware-verified.** The app boots a checkm8 SSH
   ramdisk, reads `AppleDiagnosticDataSysCfg` out of the IORegistry, decodes the
-  131072-byte `gfCS` blob (serial `CC4VKKTQHQK8`, 3 MACs, MLB, model, region),
+  131072-byte `gfCS` blob (serial `SERIAL000001`, 3 MACs, MLB, model, region),
   and keeps the raw bytes verbatim for write-back.
 - **Writing SysCfg is NOT done, and is correctly gated off** in the shipping code
   (`hasValidatedSink == false` for the placeholder sink → `writeRawBlob` throws).

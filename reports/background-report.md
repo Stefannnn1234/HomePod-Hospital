@@ -253,7 +253,7 @@ ioreg -r -c AppleDiagnosticDataAccessReadOnly -l   → property "AppleDiagnostic
 The real capture is **131072 bytes (128 KB)**, signature **`gfCS`** (the "SCfg"
 FourCC stored reversed, matching the **Reviv** carver's convention). The app's
 reversed-key parser (`SysCfg.swift`) extracts, from a known good pod:
-serial **CC4VKKTQHQK8**, Wi-Fi **d0:81:7a:e3:76:94**, BT …:95, Eth …:96,
+serial **SERIAL000001**, Wi-Fi **02:aa:bb:cc:dd:01**, BT …:02, Eth …:03,
 Model **MQHW2**, Region **LL/A**, RModel **A1639** — all validated against the
 on-device dump and the unit sticker.
 

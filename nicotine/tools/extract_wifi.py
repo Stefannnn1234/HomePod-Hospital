@@ -125,7 +125,7 @@ def main():
             by_ext["txt"] = fwfile.data
     missing_src = [e for e in ("bin", "clm_blob", "txcap_blob", "txt") if e not in by_ext]
     if missing_src:
-        print("[-] 18.3 WiFi firmware is missing %s for %s" % (missing_src, REV))
+        print("[-] the WiFi firmware source is missing %s for %s" % (missing_src, REV))
         return 1
 
     # Bring the two files the driver work was validated with to their exact

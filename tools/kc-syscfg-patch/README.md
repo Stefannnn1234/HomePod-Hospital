@@ -54,6 +54,6 @@ writes NAND, so prove it harmlessly first:
 1. `syscfgset read /mnt1/sc.bin`            — save the pod's OWN SysCfg
 2. boot the PATCHED ramdisk
 3. `syscfgset write /mnt1/sc.bin --i-understand`  — expect `set result: 0x0 SUCCESS`
-4. reboot, `syscfgset read` again, confirm the serial is UNCHANGED (CC4VKKTQHQK8)
+4. reboot, `syscfgset read` again, confirm the serial is UNCHANGED (SERIAL000001)
 Writing the pod's own bytes can't change its identity, so a clean round-trip
 proves the mechanism with zero risk. Only then write a saved dump to a new chip.

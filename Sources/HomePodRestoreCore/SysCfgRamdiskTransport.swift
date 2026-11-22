@@ -143,7 +143,7 @@ public struct SSHRamdiskTransport: SysCfgTransport, RamdiskShell {
                     sysCfgProperty: String? = "AppleDiagnosticDataSysCfg",
                     sinkCommand: String = "syscfg_write",     // legacy write path: TO CONFIRM
                     writeSink: (any WriteSink)? = nil,
-                    stageRemotePath: String = "/tmp/syscfg.bin",
+                    stageRemotePath: String = "/private/var/tmp/syscfg.bin",
                     timeout: TimeInterval = 30) {
             self.sshTool = sshTool
             self.sshpass = sshpass
@@ -328,18 +328,44 @@ public struct SSHRamdiskTransport: SysCfgTransport, RamdiskShell {
     }
 
     /// Run a pod-side command whose stdout is binary; returns exact bytes.
-    /// Wrapped in markers + base64 so it survives SSH banners and stderr noise.
+    /// Wrapped in markers so it survives SSH banners and stderr noise. The
+    /// bytes travel as plain hex from `xxd -p` (in the SSH overlay): the
+    /// ramdisk has no `base64`, so the decoding happens here instead.
     public func dumpBinary(_ command: String) async throws -> Data {
-        let remote = "echo \(Self.beginMarker); { \(command); } | base64; echo \(Self.endMarker)"
+        let remote = "echo \(Self.beginMarker); { \(command); } | PATH=\(DiagCommands.basePath) xxd -p; echo \(Self.endMarker)"
         let out = try await runSSH(remote)
-        guard let b64 = Self.extractBetweenMarkers(out) else {
+        guard let hex = Self.extractBetweenMarkers(out) else {
             throw SysCfgError.transportUnavailable("Couldn't find the payload markers in the pod's response.")
         }
-        let cleaned = b64.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "")
-        guard let data = Data(base64Encoded: cleaned) else {
-            throw SysCfgError.transportUnavailable("The pod's base64 payload didn't decode.")
+        guard let data = Self.decodeHexDump(hex) else {
+            throw SysCfgError.transportUnavailable("The pod's hex payload didn't decode.")
         }
         return data
+    }
+
+    /// `xxd -p` output (hex digits in wrapped lines) -> bytes. Whitespace and
+    /// line breaks are ignored; nil if anything else appears or the number of
+    /// hex digits is odd, so a damaged transfer is never taken for data.
+    static func decodeHexDump(_ text: String) -> Data? {
+        var data = Data()
+        var high: UInt8?
+        for scalar in text.unicodeScalars {
+            let nibble: UInt8
+            switch scalar.value {
+            case 0x30...0x39: nibble = UInt8(scalar.value - 0x30)
+            case 0x41...0x46: nibble = UInt8(scalar.value - 0x41 + 10)
+            case 0x61...0x66: nibble = UInt8(scalar.value - 0x61 + 10)
+            case 0x20, 0x09, 0x0A, 0x0D: continue
+            default: return nil
+            }
+            if let h = high {
+                data.append((h << 4) | nibble)
+                high = nil
+            } else {
+                high = nibble
+            }
+        }
+        return high == nil ? data : nil
     }
 
     // MARK: - SSH plumbing

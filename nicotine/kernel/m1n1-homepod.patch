@@ -1,0 +1,27 @@
+diff --git a/src/fb.c b/src/fb.c
+index 2b85d9a4..5edc0612 100644
+--- a/src/fb.c
++++ b/src/fb.c
+@@ -406,6 +406,22 @@ void fb_clear_direct(void)
+ void fb_init(bool clear)
+ {
+     void *custom_128, *custom_256;
++
++    /*
++     * Headless devices (e.g. HomePod, B238a): iBoot may hand over no
++     * framebuffer at all. Everything below assumes a non-zero geometry
++     * (logo placement underflows otherwise), so leave the fb console
++     * uninitialized; all other fb_* entry points check console.initialized.
++     */
++    if (!cur_boot_args.video.base || !cur_boot_args.video.width || !cur_boot_args.video.height ||
++        !cur_boot_args.video.stride) {
++        printf("fb init: no usable framebuffer (base=0x%lx %lux%lu), skipping\n",
++               (unsigned long)cur_boot_args.video.base, (unsigned long)cur_boot_args.video.width,
++               (unsigned long)cur_boot_args.video.height);
++        console.initialized = false;
++        return;
++    }
++
+     fb.hwptr = (void *)cur_boot_args.video.base;
+     fb.stride = cur_boot_args.video.stride / 4;
+     fb.width = cur_boot_args.video.width;
