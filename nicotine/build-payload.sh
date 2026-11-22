@@ -63,12 +63,11 @@ mkdir -p "$WORK/rootfs/lib/firmware"
 cp -R "$FW" "$WORK/rootfs/lib/firmware/brcm"
 
 echo "[*] Building the initramfs"
-# /dev/null and /dev/console ship as a tiny pre-built, uncompressed cpio so a
-# non-root build never needs mknod (macOS tar cannot create device nodes as a
-# normal user). The kernel reads this early-cpio segment first, then decompresses
-# the rootfs cpio that follows — the standard multi-segment initramfs format.
-( cd "$WORK/rootfs" && find . | cpio -o --format=newc -R 0:0 2>/dev/null | gzip -9 ) > "$WORK/rootfs.cpio.gz"
-cat "$HERE/prebuilt/devnodes.cpio" "$WORK/rootfs.cpio.gz" > "$WORK/initramfs.gz"
+# /dev/null and /dev/console ship as pre-built cpio entries (prebuilt/devnodes.cpio:
+# newc headers with no trailer) so a non-root build never needs mknod. They are
+# prepended to the rootfs entries to make ONE cpio archive in ONE gzip stream.
+# (m1n1 only accepts a single gzip-compressed initramfs payload.)
+( cat "$HERE/prebuilt/devnodes.cpio"; cd "$WORK/rootfs" && find . | cpio -o --format=newc -R 0:0 2>/dev/null ) | gzip -9 > "$WORK/initramfs.gz"
 
 echo "[*] Packing the IMG4 payload"
 MK="python3 -I $HERE/tools/pack.py"
