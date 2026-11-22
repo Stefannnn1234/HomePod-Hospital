@@ -93,10 +93,49 @@ fi
 
 # ---- Nicotine payload (optional): the boot files for "Boot Nicotine", inside the app
 if [ "${BUNDLE_NICOTINE:-0}" = "1" ]; then
-  PAYLOAD="${NICOTINE_PAYLOAD_DIR:-$HOME/Downloads/diagsstuffnic/linux-homepod/public}"
   DEST="$APP/Contents/Resources/Nicotine"
-  echo "==> Bundling the Nicotine payload from $PAYLOAD"
-  [ -d "$PAYLOAD" ] || { echo "BUNDLE_NICOTINE=1, but there is no payload folder at $PAYLOAD (set NICOTINE_PAYLOAD_DIR)."; exit 1; }
+  # Where the payload comes from:
+  #  - NICOTINE_PAYLOAD_DIR set        -> use that prebuilt payload.
+  #  - otherwise build it from nicotine/ (the kit in this repo) + the two Apple
+  #    inputs: NICOTINE_FIRMWARE_DIR (Broadcom WiFi/BT firmware) and NICOTINE_ADT
+  #    (Apple's raw B238a device tree). Neither is in the repo; both come from the
+  #    builder's own Apple download (see nicotine/README.md).
+  if [ -n "${NICOTINE_PAYLOAD_DIR:-}" ]; then
+    PAYLOAD="$NICOTINE_PAYLOAD_DIR"
+    echo "==> Bundling the Nicotine payload from $PAYLOAD"
+    [ -d "$PAYLOAD" ] || { echo "NICOTINE_PAYLOAD_DIR=$PAYLOAD does not exist."; exit 1; }
+  else
+    echo "==> Building the Nicotine payload from the repo kit (nicotine/)"
+    [ -f "$ROOT/nicotine/payload-from-ipsw.sh" ] || { echo "nicotine/ kit is missing from this checkout."; exit 1; }
+    command -v python3 >/dev/null || { echo "python3 is needed to build the payload."; exit 1; }
+    # One Apple input: the audioOS 18.3 restore IPSW. Both the WiFi firmware and
+    # the device tree come from it. Resolve from NICOTINE_SRC_IPSW, a local copy,
+    # or a download (Apple's public software, the same the app uses for restores).
+    SRC_IPSW="${NICOTINE_SRC_IPSW:-}"
+    if [ -z "$SRC_IPSW" ]; then
+      for c in "$HOME/Downloads/18.3.ipsw" "$HOME/homepod/homepodstuff/18.3.ipsw" "$ROOT/dist/18.3.ipsw"; do
+        if [ -f "$c" ]; then SRC_IPSW="$c"; break; fi
+      done
+    fi
+    if [ -z "$SRC_IPSW" ]; then
+      echo "    No 18.3 IPSW found; downloading it (about 3.4 GB, one time)..."
+      mkdir -p "$ROOT/dist"
+      if curl -fL --retry 3 -o "$ROOT/dist/18.3.ipsw.part" "https://nicsfix.com/ipsw/18.3.ipsw"; then
+        mv "$ROOT/dist/18.3.ipsw.part" "$ROOT/dist/18.3.ipsw"
+        SRC_IPSW="$ROOT/dist/18.3.ipsw"
+      else
+        echo "Could not download the IPSW. Set NICOTINE_SRC_IPSW to a local 18.3 IPSW, or NICOTINE_PAYLOAD_DIR to a prebuilt payload."
+        exit 1
+      fi
+    fi
+    echo "    Using IPSW: $SRC_IPSW"
+    PAYLOAD="$ROOT/dist/nicotine-payload"
+    rm -rf "$PAYLOAD"
+    if ! bash "$ROOT/nicotine/payload-from-ipsw.sh" "$SRC_IPSW" "$PAYLOAD"; then
+      echo "Building the Nicotine payload failed."
+      exit 1
+    fi
+  fi
   [ -f "$PAYLOAD/MANIFEST" ] || { echo "BUNDLE_NICOTINE=1, but $PAYLOAD has no MANIFEST. Only a payload with a MANIFEST can be bundled."; exit 1; }
   [ "$(head -n 1 "$PAYLOAD/MANIFEST" | tr -d '\r')" = "nicotine-payload 1" ] || { echo "$PAYLOAD/MANIFEST is not a Nicotine payload manifest."; exit 1; }
   mkdir -p "$DEST"
@@ -114,7 +153,7 @@ if [ "${BUNDLE_NICOTINE:-0}" = "1" ]; then
     cp "$PAYLOAD/$rel" "$DEST/$rel"
     COPIED=$((COPIED + 1))
   done < "$PAYLOAD/MANIFEST"
-  for needed in img4/iBSS.dev-hoolock.img4 img4/iBEC.dev-hoolock.img4 img4/RestoreDeviceTree_b238aap.img4 img4/RestoreTrustCache.img4 img4/RestoreKernelCache_m1n1-linux.img4; do
+  for needed in img4/RestoreDeviceTree_b238aap.img4 img4/RestoreTrustCache.img4 img4/RestoreKernelCache_m1n1-linux.img4; do
     [ -f "$DEST/$needed" ] || { echo "The payload's MANIFEST does not list $needed; this is not a bootable payload."; exit 1; }
   done
   cp "$PAYLOAD/MANIFEST" "$DEST/MANIFEST"

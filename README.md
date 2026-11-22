@@ -52,8 +52,8 @@ Needs macOS 13+ and Xcode or the Command Line Tools.
 
 ```bash
 ./scripts/build-app.sh                  # → dist/HomePod Hospital.app + zip
-BUNDLE_TOOLS=1 ./scripts/build-app.sh   # also ships gaster/idevicerestore/irecovery inside the app
-BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh   # + the Nicotine payload: self-contained "Boot Nicotine"
+BUNDLE_TOOLS=1 ./scripts/build-app.sh   # recommended: ships every tool inside the app (public build)
+BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh   # + build & bundle Nicotine (needs a 18.3 IPSW; auto-downloaded)
 ./scripts/make-nicotine-payload.sh      # → dist/Nicotine-<build>.zip (for "Import Nicotine payload…")
 swift test                              # core unit tests
 HOMEPOD_FAKE_TOOLS=1 swift test         # + end-to-end job tests with fake gaster/idevicerestore
@@ -67,11 +67,24 @@ with no Homebrew. Bundled tools are for the build Mac's CPU (`Resources/bin/ARCH
 the app falls back to installed tools. With bundled tools, end users don't need Homebrew at all to
 restore or to boot Nicotine.
 
-`BUNDLE_NICOTINE=1` copies a Nicotine payload (about 44 MB) from `NICOTINE_PAYLOAD_DIR`, default
-`~/Downloads/diagsstuffnic/linux-homepod/public`, into `Contents/Resources/Nicotine` after checking
-every file against the payload's `MANIFEST`. The payload is never part of this repository. What a
-fresh Mac then still needs, and what has and has not been verified, is in
-[docs/nicotine-boot.md](docs/nicotine-boot.md#fresh-mac-checklist).
+`BUNDLE_NICOTINE=1` **builds** the Nicotine payload from source and bundles it — no prebuilt payload
+is shipped or hosted. The `nicotine/` kit in this repo holds the kernel, m1n1, device-tree blob and
+the whole Nicotine userspace (all redistributable); the two Apple-derived pieces — the Broadcom
+WiFi/BT firmware and the device tree — are extracted at build time from one audioOS **18.3 restore
+IPSW** (`nicotine/payload-from-ipsw.sh`, pure `python3` + `hdiutil`, no pip). The build finds a local
+18.3 IPSW (`NICOTINE_SRC_IPSW`, `~/Downloads/18.3.ipsw`, `~/homepod/homepodstuff/18.3.ipsw`) or
+downloads one. To bundle a payload you already have instead, set `NICOTINE_PAYLOAD_DIR`.
+
+So a fresh checkout needs nothing but the build: `BUNDLE_TOOLS=1 BUNDLE_NICOTINE=1 ./scripts/build-app.sh`
+produces an app that can build release boot loaders and boot Nicotine with no further downloads from
+the user. See [nicotine/README.md](nicotine/README.md) and [docs/nicotine-boot.md](docs/nicotine-boot.md).
+
+**The app is publicly buildable without any private files.** `BUNDLE_TOOLS=1 ./scripts/build-app.sh`
+builds everything — including the Nicotine boot-loader builder's helpers (`hBootPatcher` from
+HoolockLinux, `img4` from xerub/img4lib, `gaster` from 0x7ff), all from public sources. Only the
+Nicotine *payload* (the Linux image: Apple WiFi/Bluetooth firmware + tuning) is private, so
+`BUNDLE_NICOTINE=1` is optional — without it the app still builds and runs, and users add a payload
+in-app with **Import Nicotine payload…** (or you host a `Nicotine-<build>.zip`).
 
 Without bundled tools, Setup opens `scripts/setup-tools.sh` in Terminal. It follows the guide
 (d235j tap, HEAD libs, idevicerestore @ d2e1c4f with the irecv_init fix, removes the tap's

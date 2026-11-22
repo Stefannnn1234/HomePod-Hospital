@@ -46,7 +46,9 @@ public struct NicotineLayout: Sendable, Equatable {
     }
 
     public var img4Dir: URL { root.appendingPathComponent("img4", isDirectory: true) }
-    /// Hoolock-patched development iBSS / iBEC (boot-linux.sh without IBOOT_DIR).
+    /// Legacy Hoolock-patched development iBSS / iBEC. The app no longer sends
+    /// these — it boots on release loaders from ReleaseIBootBuilder — but the
+    /// paths remain for payloads that still carry them.
     public var iBSS: URL { img4Dir.appendingPathComponent("iBSS.dev-hoolock.img4") }
     public var iBEC: URL { img4Dir.appendingPathComponent("iBEC.dev-hoolock.img4") }
     /// Apple's device tree for the B238a, tagged `rdtr` (TAGS=restore).
@@ -84,8 +86,10 @@ public struct NicotineLayout: Sendable, Equatable {
     /// Where that script keeps one backup per pod.
     public var configDir: URL { root.appendingPathComponent("config", isDirectory: true) }
 
-    /// The five files boot-linux.sh insists on before it starts, in its order.
-    public var bootFiles: [URL] { [iBSS, iBEC, kernelCache, deviceTree, trustCache] }
+    /// The payload files that must be present before a boot: device tree, trust
+    /// cache and the kernelcache. The boot loaders (iBSS/iBEC) are built
+    /// separately from Apple's release firmware, so they are not payload files.
+    public var bootFiles: [URL] { [kernelCache, deviceTree, trustCache] }
 
     public var folderExists: Bool {
         var isDir: ObjCBool = false

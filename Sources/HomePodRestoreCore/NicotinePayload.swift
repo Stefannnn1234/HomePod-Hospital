@@ -175,10 +175,10 @@ public struct NicotinePayload: Sendable, Equatable {
 }
 
 public enum NicotinePayloadVerifier {
-    /// The five boot files, relative to the payload folder.
+    /// The payload's boot files, relative to the payload folder. The iBSS/iBEC
+    /// boot loaders are NOT here: they are built from Apple's release firmware
+    /// by ReleaseIBootBuilder and sent from there.
     public static let requiredFiles = [
-        "img4/iBSS.dev-hoolock.img4",
-        "img4/iBEC.dev-hoolock.img4",
         "img4/RestoreDeviceTree_b238aap.img4",
         "img4/RestoreTrustCache.img4",
         "img4/RestoreKernelCache_m1n1-linux.img4",

@@ -48,11 +48,18 @@ if [ ! -d "$WORK/remote_boot/.git" ]; then
   git -c url."https://github.com/".insteadOf="git@github.com:" clone https://github.com/HoolockLinux/remote_boot "$WORK/remote_boot"
 fi
 ( cd "$WORK/remote_boot" && git fetch -q origin && git checkout -q "$HB_REV"   && git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --recursive vendor/hBootPatcher   && "$MAKE" -C vendor/hBootPatcher > "$WORK/hbootpatcher-build.log" 2>&1 )   && cp "$WORK/remote_boot/vendor/hBootPatcher/hBootPatcher" "$BIN/hBootPatcher"   || { tail -20 "$WORK/hbootpatcher-build.log" 2>/dev/null; echo "WARNING: hBootPatcher didn't build — the in-app release boot-loader builder will be disabled."; }
-# img4 (payload wrap + sign): from PATH, then a local SSHRD_Script checkout.
+# img4 (payload wrap + sign): PATH, else build xerub/img4lib from source (public,
+# MIT). COMMONCRYPTO=1 uses macOS CommonCrypto, so it needs no OpenSSL and links
+# nothing outside the system — nothing private, publicly buildable.
 IMG4="$(command -v img4 || true)"
-[ -z "$IMG4" ] && [ -x "$HOME/homepod/SSHRD_Script/Darwin/img4" ] && IMG4="$HOME/homepod/SSHRD_Script/Darwin/img4"
-if [ -n "$IMG4" ]; then cp "$IMG4" "$BIN/img4"; echo "  + img4 ($IMG4)"; else
-  echo "WARNING: img4 not found (PATH or ~/homepod/SSHRD_Script/Darwin). The in-app release boot-loader builder needs it."
+if [ -z "$IMG4" ]; then
+  if [ ! -d "$WORK/img4lib/.git" ]; then
+    git -c url."https://github.com/".insteadOf="git@github.com:" clone https://github.com/xerub/img4lib "$WORK/img4lib"
+  fi
+  ( cd "$WORK/img4lib" && git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --recursive     && "${MAKE:-make}" COMMONCRYPTO=1 > "$WORK/img4lib-build.log" 2>&1 )     && IMG4="$WORK/img4lib/img4"     || { tail -20 "$WORK/img4lib-build.log" 2>/dev/null; echo "WARNING: img4 didn't build."; IMG4=""; }
+fi
+if [ -n "$IMG4" ] && [ -x "$IMG4" ]; then cp "$IMG4" "$BIN/img4"; echo "  + img4 ($IMG4)"; else
+  echo "WARNING: img4 unavailable — the in-app release boot-loader builder will be disabled."
 fi
 
 echo "==> Copying SysCfg / builder tools (img4tool, ra1nsn0w, tsschecker, iproxy, sshpass)"

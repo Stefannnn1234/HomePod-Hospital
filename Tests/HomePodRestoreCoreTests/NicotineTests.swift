@@ -85,8 +85,10 @@ final class NicotineTests: XCTestCase {
 
     func testBootFilesAreTheOnesTheScriptChecks() {
         let layout = NicotineLayout(root: URL(fileURLWithPath: "/N"))
+        // The boot loaders (iBSS/iBEC) are built from Apple's release firmware
+        // and are not payload files; the payload carries these three.
         XCTAssertEqual(layout.bootFiles.map(\.lastPathComponent), [
-            "iBSS.dev-hoolock.img4", "iBEC.dev-hoolock.img4", "RestoreKernelCache_m1n1-linux.img4",
+            "RestoreKernelCache_m1n1-linux.img4",
             "RestoreDeviceTree_b238aap.img4", "RestoreTrustCache.img4",
         ])
         XCTAssertEqual(layout.configScript.path, "/N/homepod-config.sh")
@@ -94,9 +96,9 @@ final class NicotineTests: XCTestCase {
     }
 
     func testMissingFilesAreNamed() throws {
-        let layout = try makeLayout(omitting: ["RestoreTrustCache.img4", "iBEC.dev-hoolock.img4"])
+        let layout = try makeLayout(omitting: ["RestoreTrustCache.img4", "RestoreDeviceTree_b238aap.img4"])
         XCTAssertFalse(layout.isComplete)
-        XCTAssertEqual(layout.missingBootFiles, ["img4/iBEC.dev-hoolock.img4", "img4/RestoreTrustCache.img4"])
+        XCTAssertEqual(layout.missingBootFiles, ["img4/RestoreDeviceTree_b238aap.img4", "img4/RestoreTrustCache.img4"])
 
         let full = try makeLayout()
         XCTAssertTrue(full.isComplete)

@@ -20,7 +20,7 @@ final class NicotinePayloadTests: XCTestCase {
 
     static let allFiles = NicotinePayloadVerifier.requiredFiles + ["boot-linux.sh", "homepod-config.sh", "README-FIRST.txt"]
 
-    /// A payload folder in the published layout: eight files and a MANIFEST
+    /// A payload folder in the published layout: six files and a MANIFEST
     /// with four header lines, as the real one has.
     @discardableResult
     func makePayload(_ name: String, build: String = "107", manifest: Bool = true,
@@ -119,9 +119,9 @@ final class NicotinePayloadTests: XCTestCase {
         // A manifest that doesn't cover the boot files is not a payload manifest.
         let partial = try makePayload("partial")
         let kept = try String(contentsOf: partial.appendingPathComponent("MANIFEST"), encoding: .utf8)
-            .components(separatedBy: "\n").filter { !$0.contains("iBEC") }.joined(separator: "\n")
+            .components(separatedBy: "\n").filter { !$0.contains("RestoreDeviceTree") }.joined(separator: "\n")
         try kept.write(to: partial.appendingPathComponent("MANIFEST"), atomically: true, encoding: .utf8)
-        assertThrows(.manifestInvalid("it doesn't list img4/iBEC.dev-hoolock.img4")) { try NicotinePayloadVerifier.verify(root: partial) }
+        assertThrows(.manifestInvalid("it doesn't list img4/RestoreDeviceTree_b238aap.img4")) { try NicotinePayloadVerifier.verify(root: partial) }
 
         // No MANIFEST at all (a developer's image folder): nothing to check, not an error.
         let bench = try makePayload("bench", manifest: false)
@@ -187,10 +187,10 @@ final class NicotinePayloadTests: XCTestCase {
         XCTAssertEqual(p.source, .imported)
 
         // a picked folder that exists but is incomplete is still the one in use (and reports what it lacks)
-        let broken = try makePayload("broken", manifest: false, omit: ["img4/iBSS.dev-hoolock.img4"])
+        let broken = try makePayload("broken", manifest: false, omit: ["img4/RestoreDeviceTree_b238aap.img4"])
         p = try XCTUnwrap(NicotinePayloadLocator.resolve(chosen: broken, bundled: bundled, imported: imported))
         XCTAssertEqual(p.source, .chosen)
-        XCTAssertEqual(p.layout.missingBootFiles, ["img4/iBSS.dev-hoolock.img4"])
+        XCTAssertEqual(p.layout.missingBootFiles, ["img4/RestoreDeviceTree_b238aap.img4"])
 
         // an incomplete bundled payload is skipped for a complete imported one …
         let halfBundled = try makePayload("half-bundled", omit: ["img4/RestoreTrustCache.img4"])
