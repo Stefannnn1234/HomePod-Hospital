@@ -140,7 +140,7 @@ Every Nicotine HomePod serves its own control page, over USB and over WiFi.
 </tr>
 <tr>
 <td width="50%" valign="top">
-<b>Equaliser and Sound Glow.</b> A 10-band equaliser, and the top light pulsing with the music in colors taken from the album art.
+<b>Equalizer and Sound Glow.</b> A 10-band equalizer with presets, and the top light pulsing with the music in colors taken from the album art, your own colors, other animations or an always-on effect.
 <br><br>
 <img src="docs/images/webui-equaliser-glow.png" alt="Equaliser sliders and the Sound Glow settings">
 </td>

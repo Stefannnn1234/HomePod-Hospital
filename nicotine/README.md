@@ -127,6 +127,23 @@ UI (Overview tab, "Boot sound" card) or with `homepod-audio bootsound on`.
 - Commands: `homepod-audio bootsound [status|on|off|play|install FILE|reset]`. The player is
   `/usr/libexec/homepod-chime`; it feeds `hpfeed` through a third input, `/run/homepod/chime.pcm`.
 
+## Sound Glow and equalizer additions (build 114)
+
+Contributed by Stefan (pull request #2). All of it is off or unchanged until you choose it:
+
+- **Sound Glow**: your own colors (one to twelve; more than three take turns), four more
+  animations besides the original drifting blobs (pulse, level meter ring, bass / mid / treble
+  rings, sparkle), and always-on effects that run without music (solid, breathing, rainbow, comet,
+  fire, twinkle, aurora wave, heartbeat). A switch turns the + and - symbol lights off; touch keeps
+  working. Commands: `homepod-glow color|mode|effect|lights`; settings `GLOW_COLOR`, `GLOW_MODE`,
+  `GLOW_EFFECT`, `TOUCH_LIGHTS` in `/etc/homepod-glow.conf`. Defaults: blobs, no effect, lights on.
+- **Equalizer**: eleven more presets (rock, pop, hip-hop, electronic, jazz, classical, acoustic,
+  speech, warm, bright, loudness smile).
+- **Live tab**: click a tweeter on the ring, or the middle for the woofer, to hear only that driver
+  for 5 seconds (the others are turned down, then put back). The Speaker tab's Identify buttons
+  work as before: that tweeter alone among the seven for 2 seconds, the woofer still playing.
+- The web UI and comments use American spelling (equalizer, color, center).
+
 ## Surround and Dolby Atmos (build 113)
 
 - The AirPlay receiver (shairport-sync 5.6.3 with `src/shairport-sync-5.6.3-nicotine.patch`) asks
