@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # payload-from-ipsw.sh — assemble a complete Nicotine payload from this kit plus
 # two Apple inputs, neither of which is shipped in the repo:
-#   - an audioOS 18.3 restore IPSW (AudioAccessory1,1): the B238a device tree and
-#     the Bluetooth patch (carved from /usr/sbin/BlueTool in its root filesystem);
+#   - an audioOS 18.3 restore IPSW (AudioAccessory1,1): the B238a device tree, the
+#     Bluetooth patch (carved from /usr/sbin/BlueTool in its root filesystem), the
+#     Dolby Atmos decoder and the virtual-surround filters (tools/audio_parts.py);
 #   - the WiFi firmware 13.45.26, fetched from Apple's audioOS 11.2.5 update (one
 #     7 MB range request, checksums pinned; tools/fetch_launch_wifi.py).
 #
@@ -63,11 +64,14 @@ fi
 echo "[*] Preparing the Broadcom firmware"
 python3 -I "$HERE/tools/extract_wifi.py" "$MNT" "$WORK/firmware" "$HERE/firmware-manifest.txt" "$WIFISRC"
 
+echo "[*] Taking the Atmos decoder and the surround filters from the root filesystem (about a minute)"
+python3 -I "$HERE/tools/audio_parts.py" "$MNT" "$WORK/audio" "$HERE/audio-manifest.txt" || true
+
 echo "[*] Unwrapping the device tree"
 python3 -I "$HERE/tools/pack.py" --unwrap "$WORK/$DT_PATH" "$WORK/DeviceTree.bin"
 
 hdiutil detach "$MNT" >/dev/null 2>&1; MNT=""
 
 echo "[*] Assembling the payload"
-bash "$HERE/build-payload.sh" --firmware "$WORK/firmware" --adt "$WORK/DeviceTree.bin" --out "$OUT"
+bash "$HERE/build-payload.sh" --firmware "$WORK/firmware" --adt "$WORK/DeviceTree.bin" --audio "$WORK/audio" --out "$OUT"
 echo "[+] Nicotine payload ready in $OUT"

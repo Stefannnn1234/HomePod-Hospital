@@ -1,0 +1,5 @@
+# audio-manifest.txt -- checksums (SHA-256) of the two audio parts the build makes from the audioOS 18.3
+# root filesystem (tools/audio_parts.py). The files themselves are Apple's and are not in this repository.
+# These are the ones Nicotine was tested with.
+apac.img 486bce3ad4a673c05e620053bd7e856d4839f946f31fea08d8d74750fdab0e3a
+xtc.bin fadb9a4e8f964f1cff9036198892bee6269d7bad6eaf614a197122d7b3723251

@@ -146,7 +146,7 @@ A *payload* is three IMG4 files, `homepod-config.sh` and a `MANIFEST`:
 ```
 MANIFEST
 homepod-config.sh
-img4/RestoreKernelCache_m1n1-linux.img4   the Nicotine image (about 45 MB)
+img4/RestoreKernelCache_m1n1-linux.img4   the Nicotine image (about 67 MB)
 img4/RestoreDeviceTree_b238aap.img4       Apple's device tree
 img4/RestoreTrustCache.img4               empty trust cache
 ```

@@ -164,7 +164,14 @@ Every Nicotine HomePod serves its own control page, over USB and over WiFi.
 </tr>
 </table>
 
-There are also AirPlay, Devices, Network, Terminal and Logs tabs. The touch surface on top works
+**Surround, Dolby Atmos and rooms.** Apple Music's Atmos plays as Atmos (the build takes Apple's
+decoder from the audioOS IPSW you download; it is not in this repository). Several Nicotine
+HomePods can form a room that shows up as one AirPlay speaker: a stereo pair, or a surround layout
+where each speaker gets its own channels, with other AirPlay speakers on the network joining in if
+you switch that on. It is set up on the Speaker tab; see [nicotine/README.md](nicotine/README.md).
+
+There are also AirPlay, Devices, Network, Terminal and Logs tabs, and an optional boot sound
+(off by default) that you can replace with your own. The touch surface on top works
 too: **+** and **−** for volume, tap for play/pause, two taps for next track.
 
 The screenshots show the real pages with the network name and addresses replaced, and a

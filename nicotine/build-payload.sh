@@ -9,6 +9,11 @@
 #   --adt <file>       Apple's raw device tree for B238a (DeviceTree.b238aap.bin),
 #                      extracted from the audioOS OTA (the same OTA the release
 #                      boot-loader builder downloads).
+#   --audio <dir>      optional: apac.img (Apple's Dolby Atmos decoder) and xtc.bin
+#                      (the HomePod's virtual-surround filters), made from the 18.3
+#                      root filesystem by tools/audio_parts.py. With --rootfs they are
+#                      made here. Without them the payload works; it does not offer
+#                      Atmos, and surround channels are played unfiltered.
 #
 # Everything else — kernel, m1n1, the HomePod device-tree blob, the trust cache,
 # the IMG4 manifest, and the whole Nicotine userspace — is in this kit and is
@@ -22,7 +27,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-FW=""; ROOTFS=""; ADT=""; DTIM4P=""; OUT=""; WIFISRC=""
+FW=""; ROOTFS=""; ADT=""; DTIM4P=""; OUT=""; WIFISRC=""; AUDIO=""
 BOOTARGS="${BOOTARGS:-earlycon console=ttySAC0,115200 loglevel=8 pd_ignore_unused clk_ignore_unused rdinit=/init isolcpus=1 irqaffinity=0}"
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -30,6 +35,7 @@ while [ $# -gt 0 ]; do
 		--rootfs) ROOTFS="$2"; shift 2 ;;            # an unpacked audioOS rootfs to extract firmware from
 		--wifi-src) WIFISRC="$2"; shift 2 ;;         # Apple-layout WiFi folder (default: fetched from audioOS 11.2.5)
 		--adt) ADT="$2"; shift 2 ;;                  # Apple's raw B238a device tree
+		--audio) AUDIO="$2"; shift 2 ;;              # a folder with apac.img and/or xtc.bin (tools/audio_parts.py)
 		--devicetree-im4p) DTIM4P="$2"; shift 2 ;;   # the OTA's DeviceTree im4p, to unwrap
 		--out) OUT="$2"; shift 2 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
@@ -55,6 +61,12 @@ if [ -z "$FW" ]; then
 	python3 -I "$HERE/tools/extract_wifi.py" "$ROOTFS" "$FW" "$HERE/firmware-manifest.txt" "$WIFISRC" || exit 1
 fi
 [ -d "$FW" ] || { echo "firmware dir not found: $FW"; exit 2; }
+# the Atmos decoder and the surround filters: given, or made from the same root filesystem
+if [ -z "$AUDIO" ] && [ -n "$ROOTFS" ] && [ -d "$ROOTFS" ]; then
+	AUDIO="$WORK0/audio"
+	echo "[*] Taking the Atmos decoder and the surround filters from the root filesystem (about a minute)"
+	python3 -I "$HERE/tools/audio_parts.py" "$ROOTFS" "$AUDIO" "$HERE/audio-manifest.txt" || true
+fi
 # device tree: a raw ADT, or unwrapped from the OTA's DeviceTree im4p.
 if [ -z "$ADT" ]; then
 	[ -n "$DTIM4P" ] && [ -f "$DTIM4P" ] || { echo "give --adt <raw> or --devicetree-im4p <file>."; exit 2; }
@@ -72,6 +84,20 @@ echo "[*] Adding the Broadcom firmware from $FW"
 rm -rf "$WORK/rootfs/lib/firmware/brcm"
 mkdir -p "$WORK/rootfs/lib/firmware"
 cp -R "$FW" "$WORK/rootfs/lib/firmware/brcm"
+
+# Apple's two audio parts, if the build has them (never part of the skeleton)
+mkdir -p "$WORK/rootfs/usr/lib/nicotine"
+rm -f "$WORK/rootfs/usr/lib/nicotine/apac.img" "$WORK/rootfs/usr/lib/nicotine/xtc.bin"
+ATMOS=no
+if [ -n "$AUDIO" ] && [ -f "$AUDIO/apac.img" ]; then
+	install -m 0644 "$AUDIO/apac.img" "$WORK/rootfs/usr/lib/nicotine/apac.img"; ATMOS=yes
+fi
+if [ -n "$AUDIO" ] && [ -f "$AUDIO/xtc.bin" ]; then
+	install -m 0644 "$AUDIO/xtc.bin" "$WORK/rootfs/usr/lib/nicotine/xtc.bin"
+else
+	echo "[!] No surround filters: surround and height channels will be played unfiltered."
+fi
+[ "$ATMOS" = yes ] && echo "[+] Dolby Atmos decoding is in this payload" || echo "[!] No Atmos decoder: this payload will not offer Dolby Atmos."
 
 echo "[*] Building the initramfs"
 # /dev/null and /dev/console ship as pre-built cpio entries (prebuilt/devnodes.cpio:

@@ -1,0 +1,1569 @@
+diff --git a/homepod_control.c b/homepod_control.c
+new file mode 100644
+index 0000000..7c60a9b
+--- /dev/null
++++ b/homepod_control.c
+@@ -0,0 +1,686 @@
++/*
++ * homepod_control.c -- Nicotine (HomePod Linux) glue, compiled as part of shairport.c.
++ *
++ * 1. Control FIFO (default /run/homepod/airplay.ctl, or $HOMEPOD_AIRPLAY_CTL). One command
++ *    per line, passed to Shairport Sync's own remote-control module (remote/remote.c), which
++ *    for an AirPlay 2 sender uses sendMediaRemoteCommand on the event channel:
++ *        playpause | play | pause | next | previous | stop
++ *        volume <airplay volume>      -30.0 .. 0.0, or -144 for mute; the sender's own
++ *                                     volume control follows (volume notification)
++ *    This is the interface the D-Bus / MPRIS / MQTT front ends offer upstream; none of
++ *    those is built here (no glib, no broker), hence the FIFO.
++ *
++ * 2. Volume reports. Every time the player's AirPlay volume changes (set by the sender or
++ *    through the FIFO), `/usr/sbin/homepod-audio volume-sync airplay <airplay volume>` is run
++ *    (or $HOMEPOD_VOLUME_HOOK). The speaker applies the volume itself; the samples leave
++ *    Shairport Sync at line level (general.ignore_volume_control = "yes"). Reports are
++ *    coalesced: while one hook is running, only the newest value is kept.
++ *
++ * 3. Now playing (/run/homepod/nowplaying.json, or $HOMEPOD_NOWPLAYING). A metadata-hub
++ *    watcher only flags "something changed"; a thread of our own ("homepod_np") then reads
++ *    the hub under its read lock, builds the record and, if it differs from what is on
++ *    disk, replaces the file (temp file + rename). At most two writes a second; while a
++ *    sender holds the player the thread also re-checks every 2 s (session end, drift).
++ *    The receiver never waits for this: the watcher only signals a condition variable.
++ *        {"source":"airplay|none","state":"playing|paused|stopped","title":"","artist":"",
++ *         "album":"","duration":0.0,"position":0.0,"position_at":0.0,"client":"",
++ *         "cover":"","updated":0.0}
++ *    position is in seconds as of position_at (unix time): a page runs the bar itself, so
++ *    the file is NOT rewritten as the track plays, only when the position jumps (> 1.5 s
++ *    away from where it should be) or anything else changes.
++ *    Cover art: the hub caches it as <cover_art_cache_directory>/cover-<md5>.<ext>. When
++ *    that directory is /run/homepod/cover (metadata.cover_art_cache_directory in the
++ *    config; $HOMEPOD_COVER_DIR here) the file is used as it is and the hub itself deletes
++ *    the previous one. Otherwise it is copied there and older copies are deleted, so at
++ *    most one cover stays in RAM. "cover" is then "/cover/cover-<md5>.<ext>".
++ *
++ * The now-playing code between "pure part" markers needs nothing from Shairport Sync, so
++ * a host test harness can #define HOMEPOD_NP_TEST and #include this file.
++ */
++#ifndef HOMEPOD_NP_TEST
++#include <spawn.h>
++#include <sys/wait.h>
++#include "remote/remote.h"
++
++extern char **environ;
++
++static pthread_mutex_t homepod_vol_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t homepod_vol_cond = PTHREAD_COND_INITIALIZER;
++static double homepod_vol_latest;
++static int homepod_vol_pending;
++
++void homepod_volume_changed(double airplay_volume) {
++  pthread_mutex_lock(&homepod_vol_lock);
++  homepod_vol_latest = airplay_volume;
++  homepod_vol_pending = 1;
++  pthread_cond_signal(&homepod_vol_cond);
++  pthread_mutex_unlock(&homepod_vol_lock);
++}
++
++static void *homepod_volume_thread(__attribute__((unused)) void *arg) {
++  const char *hook = getenv("HOMEPOD_VOLUME_HOOK");
++  if ((hook == NULL) || (hook[0] == '\0'))
++    hook = "/usr/sbin/homepod-audio";
++  while (1) {
++    double v;
++    pthread_mutex_lock(&homepod_vol_lock);
++    while (homepod_vol_pending == 0)
++      pthread_cond_wait(&homepod_vol_cond, &homepod_vol_lock);
++    v = homepod_vol_latest;
++    homepod_vol_pending = 0;
++    pthread_mutex_unlock(&homepod_vol_lock);
++    if (access(hook, X_OK) == 0) {
++      char value[32];
++      pid_t child;
++      snprintf(value, sizeof(value), "%.2f", v);
++      char *const argv[] = {(char *)hook, "volume-sync", "airplay", value, NULL};
++      // the hook's own output does not belong in Shairport Sync's log
++      posix_spawn_file_actions_t actions;
++      posix_spawn_file_actions_init(&actions);
++      posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
++      if (posix_spawn(&child, hook, &actions, NULL, argv, environ) == 0) {
++        int status;
++        while ((waitpid(child, &status, 0) < 0) && (errno == EINTR))
++          ;
++      } else {
++        debug(1, "homepod: could not run \"%s\".", hook);
++      }
++      posix_spawn_file_actions_destroy(&actions);
++    }
++  }
++  return NULL;
++}
++
++static void homepod_control_line(char *line) {
++  double v;
++  debug(2, "homepod: control command \"%s\".", line);
++  if (strcmp(line, "playpause") == 0)
++    remote_simple_command(rcsc_play_pause);
++  else if (strcmp(line, "play") == 0)
++    remote_simple_command(rcsc_play);
++  else if (strcmp(line, "pause") == 0)
++    remote_simple_command(rcsc_pause);
++  else if (strcmp(line, "stop") == 0)
++    remote_simple_command(rcsc_stop);
++  else if (strcmp(line, "next") == 0)
++    remote_simple_command(rcsc_next_item);
++  else if (strcmp(line, "previous") == 0)
++    remote_simple_command(rcsc_previous_item);
++  else if (sscanf(line, "volume %lf", &v) == 1) {
++    if (v < -30.0)
++      v = -144.0; // mute
++    else if (v > 0.0)
++      v = 0.0;
++    remote_set_airplay_volume(v);
++  } else if (line[0] != '\0')
++    debug(1, "homepod: unknown control command \"%s\".", line);
++}
++
++static void *homepod_control_thread(__attribute__((unused)) void *arg) {
++  const char *path = getenv("HOMEPOD_AIRPLAY_CTL");
++  if ((path == NULL) || (path[0] == '\0'))
++    path = "/run/homepod/airplay.ctl";
++  while (1) {
++    // O_RDWR: the FIFO never reports end-of-file when a writer goes away.
++    // Plain read(), NOT stdio: a thread parked in fgets() holds that FILE's lock, and
++    // glibc's exit() takes every stdio lock while flushing, so the program could never
++    // exit (SIGTERM hung for ever in build 106 to 108).
++    int fd;
++    if ((mkfifo(path, 0600) != 0) && (errno != EEXIST))
++      debug(1, "homepod: can not make the control FIFO \"%s\".", path);
++    fd = open(path, O_RDWR | O_CLOEXEC);
++    if (fd < 0) {
++      sleep(5);
++      continue;
++    }
++    char line[128];
++    size_t len = 0;
++    int overlong = 0;
++    while (1) {
++      char c;
++      ssize_t n = read(fd, &c, 1);
++      if (n < 0) {
++        if (errno == EINTR)
++          continue;
++        break;
++      }
++      if (n == 0)
++        break;
++      if ((c == '\n') || (c == '\r')) {
++        line[len] = '\0';
++        if ((overlong == 0) && (len > 0))
++          homepod_control_line(line);
++        len = 0;
++        overlong = 0;
++      } else if (len < sizeof(line) - 1) {
++        line[len++] = c;
++      } else {
++        overlong = 1; // drop the whole line
++      }
++    }
++    close(fd);
++    sleep(1);
++  }
++  return NULL;
++}
++#endif /* HOMEPOD_NP_TEST */
++
++/* ======== 3. Now playing: pure part (libc only, driven by tests/np_harness.c) ======== */
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#define HP_NP_FIELD 512 /* bytes kept of each text field (cut at a character boundary) */
++#define HP_NP_JSON_MAX (6 * 5 * HP_NP_FIELD + 1024)
++
++/* what the receiver knows, as read from the hub and the connection */
++typedef struct {
++  int session;         /* a sender holds the player */
++  int player_state;    /* 0 unknown, 1 stopped, 2 paused, 3 playing (as play_status_type) */
++  int rate_paused;     /* AirPlay 2: the sender has set the play rate to 0 */
++  const char *title, *artist, *album, *client;
++  const char *cover_file; /* pathname of the cached cover, NULL/"" if none */
++  double duration;     /* seconds, 0 = unknown */
++  int position_valid;
++  double position;     /* seconds into the track, now */
++} hp_np_input;
++
++/* the record as it goes into the file */
++typedef struct {
++  char source[12], state[12];
++  char title[HP_NP_FIELD], artist[HP_NP_FIELD], album[HP_NP_FIELD], client[HP_NP_FIELD];
++  char cover[HP_NP_FIELD];
++  double duration, position, position_at, updated;
++} hp_np_record;
++
++/* copy at most dstsz-1 bytes of s, never cutting a UTF-8 sequence in two */
++static void hp_np_copy(char *dst, size_t dstsz, const char *s) {
++  size_t n;
++  if ((s == NULL) || (dstsz == 0)) {
++    if (dstsz)
++      dst[0] = '\0';
++    return;
++  }
++  n = strlen(s);
++  if (n > dstsz - 1) {
++    n = dstsz - 1;
++    while ((n > 0) && (((unsigned char)s[n] & 0xC0) == 0x80))
++      n--; /* s[n] is the first byte left out: back up to a lead byte */
++  }
++  memcpy(dst, s, n);
++  dst[n] = '\0';
++}
++
++/* length of the valid UTF-8 sequence at s (1..4), or 0 if it is not valid (RFC 3629:
++   no overlong forms, no surrogates, nothing above U+10FFFF) */
++static int hp_utf8_seq(const unsigned char *s) {
++  unsigned char c = s[0];
++  if (c < 0x80)
++    return 1;
++  if ((c >= 0xC2) && (c <= 0xDF))
++    return ((s[1] & 0xC0) == 0x80) ? 2 : 0;
++  if ((c >= 0xE0) && (c <= 0xEF)) {
++    unsigned char lo = 0x80, hi = 0xBF;
++    if (c == 0xE0)
++      lo = 0xA0;
++    else if (c == 0xED)
++      hi = 0x9F;
++    if ((s[1] < lo) || (s[1] > hi) || ((s[2] & 0xC0) != 0x80))
++      return 0;
++    return 3;
++  }
++  if ((c >= 0xF0) && (c <= 0xF4)) {
++    unsigned char lo = 0x80, hi = 0xBF;
++    if (c == 0xF0)
++      lo = 0x90;
++    else if (c == 0xF4)
++      hi = 0x8F;
++    if ((s[1] < lo) || (s[1] > hi) || ((s[2] & 0xC0) != 0x80) || ((s[3] & 0xC0) != 0x80))
++      return 0;
++    return 4;
++  }
++  return 0;
++}
++
++/* append s as a JSON string (with quotes) at out[*pos]; returns 0, or -1 if out is full.
++   Invalid UTF-8 becomes U+FFFD; control characters, U+2028 and U+2029 are escaped. */
++static int hp_json_str(char *out, size_t outsz, size_t *pos, const char *s) {
++  static const char hex[] = "0123456789abcdef";
++  const unsigned char *p = (const unsigned char *)(s ? s : "");
++  size_t o = *pos;
++#define HP_PUT(ch)                                                                                 \
++  do {                                                                                             \
++    if (o + 1 >= outsz)                                                                            \
++      return -1;                                                                                   \
++    out[o++] = (char)(ch);                                                                         \
++  } while (0)
++  HP_PUT('"');
++  while (*p) {
++    unsigned char c = *p;
++    int n;
++    if (c == '"' || c == '\\') {
++      HP_PUT('\\');
++      HP_PUT(c);
++      p++;
++    } else if (c < 0x20) {
++      HP_PUT('\\');
++      switch (c) {
++      case '\b': HP_PUT('b'); break;
++      case '\f': HP_PUT('f'); break;
++      case '\n': HP_PUT('n'); break;
++      case '\r': HP_PUT('r'); break;
++      case '\t': HP_PUT('t'); break;
++      default:
++        HP_PUT('u'); HP_PUT('0'); HP_PUT('0'); HP_PUT(hex[c >> 4]); HP_PUT(hex[c & 15]);
++      }
++      p++;
++    } else if ((n = hp_utf8_seq(p)) == 0) {
++      const char *r = "\\ufffd";
++      while (*r)
++        HP_PUT(*r++);
++      p++;
++    } else if ((n == 3) && (p[0] == 0xE2) && (p[1] == 0x80) && ((p[2] == 0xA8) || (p[2] == 0xA9))) {
++      const char *r = (p[2] == 0xA8) ? "\\u2028" : "\\u2029";
++      while (*r)
++        HP_PUT(*r++);
++      p += 3;
++    } else {
++      while (n--)
++        HP_PUT(*p++);
++    }
++  }
++  HP_PUT('"');
++  out[o] = '\0';
++  *pos = o;
++  return 0;
++#undef HP_PUT
++}
++
++static double hp_num(double v) { return (isfinite(v) && (v > 0.0)) ? v : 0.0; }
++
++/* the record as one line of JSON; returns its length or -1 */
++static int hp_np_format(const hp_np_record *r, char *out, size_t outsz) {
++  size_t pos = 0;
++  int n;
++#define HP_LIT(text)                                                                               \
++  do {                                                                                             \
++    n = snprintf(out + pos, outsz - pos, "%s", text);                                              \
++    if ((n < 0) || ((size_t)n >= outsz - pos))                                                     \
++      return -1;                                                                                   \
++    pos += (size_t)n;                                                                              \
++  } while (0)
++#define HP_STR(key, val)                                                                           \
++  do {                                                                                             \
++    HP_LIT(key);                                                                                   \
++    if (hp_json_str(out, outsz, &pos, val) != 0)                                                   \
++      return -1;                                                                                   \
++  } while (0)
++#define HP_DBL(key, val)                                                                           \
++  do {                                                                                             \
++    n = snprintf(out + pos, outsz - pos, "%s%.3f", key, hp_num(val));                              \
++    if ((n < 0) || ((size_t)n >= outsz - pos))                                                     \
++      return -1;                                                                                   \
++    pos += (size_t)n;                                                                              \
++  } while (0)
++  HP_STR("{\"source\":", r->source);
++  HP_STR(",\"state\":", r->state);
++  HP_STR(",\"title\":", r->title);
++  HP_STR(",\"artist\":", r->artist);
++  HP_STR(",\"album\":", r->album);
++  HP_DBL(",\"duration\":", r->duration);
++  HP_DBL(",\"position\":", r->position);
++  HP_DBL(",\"position_at\":", r->position_at);
++  HP_STR(",\"client\":", r->client);
++  HP_STR(",\"cover\":", r->cover);
++  HP_DBL(",\"updated\":", r->updated);
++  HP_LIT("}\n");
++  return (int)pos;
++#undef HP_LIT
++#undef HP_STR
++#undef HP_DBL
++}
++
++/* build the record for time "now" (unix seconds); cover_url is the already mapped URL */
++static void hp_np_build(hp_np_record *r, const hp_np_input *in, const char *cover_url, double now) {
++  memset(r, 0, sizeof(*r));
++  r->position_at = now;
++  if (!in->session) {
++    strcpy(r->source, "none");
++    strcpy(r->state, "stopped");
++    return;
++  }
++  strcpy(r->source, "airplay");
++  if (in->player_state == 3)
++    strcpy(r->state, in->rate_paused ? "paused" : "playing");
++  else if (in->player_state == 2)
++    strcpy(r->state, "paused");
++  else
++    strcpy(r->state, "stopped");
++  hp_np_copy(r->title, sizeof(r->title), in->title);
++  hp_np_copy(r->artist, sizeof(r->artist), in->artist);
++  hp_np_copy(r->album, sizeof(r->album), in->album);
++  hp_np_copy(r->client, sizeof(r->client), in->client);
++  hp_np_copy(r->cover, sizeof(r->cover), cover_url);
++  r->duration = hp_num(in->duration);
++  if (in->position_valid) {
++    r->position = hp_num(in->position);
++    if ((r->duration > 0.0) && (r->position > r->duration))
++      r->position = r->duration;
++  }
++}
++
++/* 1 if b says the same as a (a written earlier, b built now), 0 if b must be written */
++static int hp_np_same(const hp_np_record *a, const hp_np_record *b) {
++  double expect;
++  if (strcmp(a->source, b->source) || strcmp(a->state, b->state) || strcmp(a->title, b->title) ||
++      strcmp(a->artist, b->artist) || strcmp(a->album, b->album) ||
++      strcmp(a->client, b->client) || strcmp(a->cover, b->cover))
++    return 0;
++  if (fabs(a->duration - b->duration) > 0.5)
++    return 0;
++  expect = a->position;
++  if (strcmp(a->state, "playing") == 0)
++    expect += b->position_at - a->position_at;
++  if ((a->duration > 0.0) && (expect > a->duration))
++    expect = a->duration;
++  return fabs(expect - b->position) <= 1.5;
++}
++
++/* replace path with buf atomically; 0 or an errno value */
++static int hp_np_write(const char *path, const char *buf, size_t len) {
++  char tmp[512];
++  int fd, err = 0;
++  size_t done = 0;
++  if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp))
++    return ENAMETOOLONG;
++  fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++  if (fd < 0)
++    return errno;
++  while (done < len) {
++    ssize_t w = write(fd, buf + done, len - done);
++    if (w < 0) {
++      if (errno == EINTR)
++        continue;
++      err = errno;
++      break;
++    }
++    done += (size_t)w;
++  }
++  if ((close(fd) != 0) && (err == 0))
++    err = errno;
++  if ((err == 0) && (rename(tmp, path) != 0))
++    err = errno;
++  if (err != 0)
++    unlink(tmp);
++  return err;
++}
++
++/* remove every cover-* file in dir except keep (may be NULL) */
++static void hp_cover_prune(const char *dir, const char *keep) {
++  DIR *d = opendir(dir);
++  struct dirent *e;
++  if (d == NULL)
++    return;
++  while ((e = readdir(d)) != NULL) {
++    if ((strncmp(e->d_name, "cover-", 6) == 0) && ((keep == NULL) || strcmp(e->d_name, keep))) {
++      char p[768];
++      if (snprintf(p, sizeof(p), "%s/%s", dir, e->d_name) < (int)sizeof(p))
++        unlink(p);
++    }
++  }
++  closedir(d);
++}
++
++/* Make the hub's cached cover reachable as <coverdir>/<name> and put "/cover/<name>" in
++   url (or "" when there is no usable cover). Copies it when the hub caches elsewhere. */
++static void hp_cover_map(const char *hub_path, const char *coverdir, char *url, size_t urlsz) {
++  const char *base, *p = hub_path;
++  size_t dl = strlen(coverdir);
++  struct stat st;
++  url[0] = '\0';
++  if ((p != NULL) && (strncmp(p, "file://", 7) == 0))
++    p += 7;
++  if ((p == NULL) || (p[0] != '/'))
++    return;
++  base = strrchr(p, '/') + 1;
++  /* only names the hub makes: cover-<hex>.<ext>, nothing a page could misread */
++  if ((strncmp(base, "cover-", 6) != 0) || (strlen(base) > 64) ||
++      (strspn(base + 6, "0123456789abcdef") == 0) ||
++      (strspn(base + 6, "0123456789abcdefjpgnti.") != strlen(base + 6)))
++    return;
++  if ((stat(p, &st) != 0) || !S_ISREG(st.st_mode) || (st.st_size <= 0))
++    return;
++  if ((strncmp(p, coverdir, dl) != 0) || (p[dl] != '/') || (strchr(p + dl + 1, '/') != NULL)) {
++    /* cached somewhere else: copy it in (once), drop older copies */
++    char dst[768], tmp[800];
++    struct stat dt;
++    if (snprintf(dst, sizeof(dst), "%s/%s", coverdir, base) >= (int)sizeof(dst))
++      return;
++    if ((stat(dst, &dt) != 0) || (dt.st_size != st.st_size)) {
++      int in, out, ok = 0;
++      char buf[16384];
++      if (st.st_size > 8 * 1024 * 1024)
++        return;
++      mkdir(coverdir, 0755);
++      snprintf(tmp, sizeof(tmp), "%s/.%s.tmp", coverdir, base);
++      in = open(p, O_RDONLY | O_CLOEXEC);
++      if (in < 0)
++        return;
++      out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++      if (out >= 0) {
++        ssize_t r;
++        ok = 1;
++        while ((r = read(in, buf, sizeof(buf))) != 0) {
++          if (r < 0) {
++            if (errno == EINTR)
++              continue;
++            ok = 0;
++            break;
++          }
++          if (write(out, buf, (size_t)r) != r) {
++            ok = 0;
++            break;
++          }
++        }
++        if (close(out) != 0)
++          ok = 0;
++        if (!ok || (rename(tmp, dst) != 0)) {
++          unlink(tmp);
++          ok = 0;
++        }
++      }
++      close(in);
++      if (!ok)
++        return;
++    }
++    hp_cover_prune(coverdir, base);
++  }
++  snprintf(url, urlsz, "/cover/%s", base);
++}
++/* ======== end of the pure part ======== */
++
++#ifndef HOMEPOD_NP_TEST
++/* ======== 3. Now playing: the receiver side ======== */
++#include <time.h>
++
++extern pthread_rwlock_t metadata_hub_re_lock; /* metadata/hub.c */
++
++static pthread_mutex_t homepod_np_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t homepod_np_cond;
++static int homepod_np_kick = 1; /* write the "none" record at start */
++
++/* runs on whichever thread changed the hub, with the hub's write lock held: only flag it */
++static void homepod_np_watcher(__attribute__((unused)) struct metadata_bundle *b) {
++  pthread_mutex_lock(&homepod_np_lock);
++  homepod_np_kick = 1;
++  pthread_cond_signal(&homepod_np_cond);
++  pthread_mutex_unlock(&homepod_np_lock);
++}
++
++static double homepod_np_clock(clockid_t c) {
++  struct timespec ts;
++  clock_gettime(c, &ts);
++  return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
++}
++
++/* Copy what the page needs out of the hub and the playing connection. Lock order as in
++   rtsp.c / the MPRIS code: principal_conn_lock, then the hub lock (both as reader). */
++static void homepod_np_snapshot(hp_np_input *in, char (*s)[HP_NP_FIELD], char *cover_path,
++                                size_t cover_sz) {
++  memset(in, 0, sizeof(*in));
++  cover_path[0] = '\0';
++  pthread_rwlock_rdlock(&principal_conn_lock);
++  pthread_rwlock_rdlock(&metadata_hub_re_lock);
++  rtsp_conn_info *conn = principal_conn;
++  if (conn != NULL) {
++    in->session = 1;
++    in->player_state = (int)metadata_store.player_state;
++    hp_np_copy(s[0], HP_NP_FIELD, metadata_store.npi.track_name);
++    hp_np_copy(s[1], HP_NP_FIELD, metadata_store.npi.artist_name);
++    hp_np_copy(s[2], HP_NP_FIELD, metadata_store.npi.album_name);
++    hp_np_copy(s[3], HP_NP_FIELD, metadata_store.client_name);
++    hp_np_copy(cover_path, cover_sz, metadata_store.npi.cover_art_pathname);
++    in->title = s[0];
++    in->artist = s[1];
++    in->album = s[2];
++    in->client = s[3];
++    in->cover_file = cover_path;
++    if (metadata_store.npi.songtime_in_microseconds.valid)
++      in->duration = metadata_store.npi.songtime_in_microseconds.value * 1e-6;
++    int use_plist = 0;
++#ifdef CONFIG_AIRPLAY_2
++    if (conn->airplay_type == ap_2) {
++      in->rate_paused = (conn->ap2_play_enabled == 0);
++      use_plist = ((config.airplay_features & ((uint64_t)1 << 50)) != 0);
++    }
++    if (use_plist) {
++      /* as the MPRIS Position property: elapsed time when the now-playing info came,
++         plus what has been played since */
++      if (metadata_store.npi.elapsedTimeOnReceiptOfNowPlayingInfo.valid) {
++        double pos = metadata_store.npi.elapsedTimeOnReceiptOfNowPlayingInfo.value * 1e-9;
++        if (metadata_store.npi.playbackRate > 0.0) {
++          unsigned int rate =
++              (unsigned int)RATE_FROM_ENCODED_FORMAT(config.current_output_configuration);
++          if ((rate != 0) &&
++              (conn->frames_played > metadata_store.npi.framesPlayedOnReceiptOfNowPlayingInfo))
++            pos += (double)(conn->frames_played -
++                            metadata_store.npi.framesPlayedOnReceiptOfNowPlayingInfo) /
++                   rate;
++        }
++        in->position = pos;
++        in->position_valid = 1;
++      }
++    }
++#endif
++    if (!use_plist && (metadata_store.progress_string != NULL) && (conn->input_rate != 0) &&
++        (metadata_store.npi.playing_state != 2)) {
++      /* classic AirPlay: RTP timestamps of the track start and end, and of what plays now */
++      int32_t total = metadata_store.progress_last_timestamp - metadata_store.progress_first_timestamp;
++      int32_t played = metadata_store.head_rtp_timestamp - metadata_store.progress_first_timestamp;
++      if ((total > 0) && (played >= 0) && (played <= total)) {
++        in->position = (double)played / conn->input_rate;
++        in->position_valid = 1;
++        if (in->duration <= 0.0)
++          in->duration = (double)total / conn->input_rate;
++      }
++    }
++  }
++  pthread_rwlock_unlock(&metadata_hub_re_lock);
++  pthread_rwlock_unlock(&principal_conn_lock);
++}
++
++static void *homepod_np_thread(__attribute__((unused)) void *arg) {
++  const char *path = getenv("HOMEPOD_NOWPLAYING");
++  const char *coverdir = getenv("HOMEPOD_COVER_DIR");
++  static hp_np_record last, now_rec;
++  static char json[HP_NP_JSON_MAX];
++  static char strs[4][HP_NP_FIELD];
++  char cover_path[HP_NP_FIELD], cover_url[HP_NP_FIELD];
++  int have_last = 0, active = 0, failing = 0;
++  double last_write = -10.0;
++  if ((path == NULL) || (path[0] == '\0'))
++    path = "/run/homepod/nowplaying.json";
++  if ((coverdir == NULL) || (coverdir[0] == '\0'))
++    coverdir = "/run/homepod/cover";
++  while (1) {
++    hp_np_input in;
++    pthread_mutex_lock(&homepod_np_lock);
++    while (homepod_np_kick == 0) {
++      if (active) {
++        struct timespec ts;
++        clock_gettime(CLOCK_MONOTONIC, &ts);
++        ts.tv_sec += 2;
++        if (pthread_cond_timedwait(&homepod_np_cond, &homepod_np_lock, &ts) == ETIMEDOUT)
++          break;
++      } else {
++        pthread_cond_wait(&homepod_np_cond, &homepod_np_lock);
++      }
++    }
++    pthread_mutex_unlock(&homepod_np_lock);
++    /* at most two writes a second: let a burst of changes settle first */
++    double since = homepod_np_clock(CLOCK_MONOTONIC) - last_write;
++    if (since < 0.5)
++      usleep((useconds_t)((0.5 - since) * 1e6));
++    pthread_mutex_lock(&homepod_np_lock);
++    homepod_np_kick = 0;
++    pthread_mutex_unlock(&homepod_np_lock);
++
++    homepod_np_snapshot(&in, strs, cover_path, sizeof(cover_path));
++    cover_url[0] = '\0';
++    if (in.session)
++      hp_cover_map(in.cover_file, coverdir, cover_url, sizeof(cover_url));
++    hp_np_build(&now_rec, &in, cover_url, homepod_np_clock(CLOCK_REALTIME));
++    active = in.session;
++    if (have_last && hp_np_same(&last, &now_rec))
++      continue;
++    now_rec.updated = now_rec.position_at;
++    int len = hp_np_format(&now_rec, json, sizeof(json));
++    if (len < 0)
++      continue; /* cannot happen: the buffer holds the largest record */
++    int err = hp_np_write(path, json, (size_t)len);
++    if ((err == ENOENT) && (strrchr(path, '/') != NULL)) {
++      char dir[512];
++      hp_np_copy(dir, sizeof(dir), path);
++      char *slash = strrchr(dir, '/');
++      if (slash && (slash != dir)) {
++        *slash = '\0';
++        mkdir(dir, 0755);
++        err = hp_np_write(path, json, (size_t)len);
++      }
++    }
++    last_write = homepod_np_clock(CLOCK_MONOTONIC);
++    if (err == 0) {
++      last = now_rec;
++      have_last = 1;
++      failing = 0;
++    } else {
++      if (failing == 0)
++        debug(1, "homepod: can not write \"%s\": %s.", path, strerror(err));
++      failing = 1;
++      have_last = 0; /* try again at the next change or check */
++    }
++  }
++  return NULL;
++}
++#endif /* HOMEPOD_NP_TEST */
++
++#ifndef HOMEPOD_NP_TEST
++static void homepod_control_start(void) {
++  static pthread_t control_thread, volume_thread, np_thread;
++  pthread_condattr_t ca;
++  pthread_condattr_init(&ca);
++  pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
++  pthread_cond_init(&homepod_np_cond, &ca);
++  pthread_condattr_destroy(&ca);
++  add_metadata_watcher(homepod_np_watcher);
++  named_pthread_create(&np_thread, NULL, &homepod_np_thread, NULL, "homepod_np");
++  named_pthread_create(&volume_thread, NULL, &homepod_volume_thread, NULL, "homepod_vol");
++  named_pthread_create(&control_thread, NULL, &homepod_control_thread, NULL, "homepod_ctl");
++}
++#endif
+diff --git a/mdns/mdns_tinysvcmdns.c b/mdns/mdns_tinysvcmdns.c
+index e9bc22b..6e2116c 100644
+--- a/mdns/mdns_tinysvcmdns.c
++++ b/mdns/mdns_tinysvcmdns.c
+@@ -39,12 +39,27 @@
+ 
+ static struct mdnsd *svr = NULL;
+ 
+-static int mdns_tinysvcmdns_register(char *ap1name, __attribute__((unused)) char *ap2name, int port,
+-                                     __attribute__((unused)) char **txt_records,
+-                                     __attribute__((unused)) char **secondary_txt_records) {
++static int mdns_tinysvcmdns_register(char *ap1name, char *ap2name, int port, char **txt_records,
++                                     char **secondary_txt_records) {
+   struct ifaddrs *ifalist;
+   struct ifaddrs *ifa;
+ 
++  /* HomePod Linux: when general.interface is set, join the mDNS group on that
++     interface (e.g. wlan0) instead of whichever one holds the default route. */
++  if (config.interface != NULL) {
++    extern uint32_t tinysvcmdns_interface_ip;
++    struct ifaddrs *ifl, *i;
++    if (getifaddrs(&ifl) == 0) {
++      for (i = ifl; i != NULL; i = i->ifa_next)
++        if (i->ifa_addr && (i->ifa_addr->sa_family == AF_INET) &&
++            (strcmp(config.interface, i->ifa_name) == 0)) {
++          tinysvcmdns_interface_ip = ((struct sockaddr_in *)i->ifa_addr)->sin_addr.s_addr;
++          break;
++        }
++      freeifaddrs(ifl);
++    }
++  }
++
+   svr = mdnsd_start();
+   if (svr == NULL) {
+     warn("tinysvcmdns: mdnsd_start() failed");
+@@ -102,6 +117,8 @@ static int mdns_tinysvcmdns_register(char *ap1name, __attribute__((unused)) char
+   for (ifa = ifa->ifa_next; ifa != NULL; ifa = ifa->ifa_next) {
+     if (ifa->ifa_flags & IFF_LOOPBACK) // Skip loop-back interfaces
+       continue;
++    if (ifa->ifa_addr == NULL) // HomePod Linux: tunnels such as sit0 have no address
++      continue;
+     // only check for the named interface, if specified
+     if ((config.interface == NULL) || (strcmp(config.interface, ifa->ifa_name) == 0)) {
+       switch (ifa->ifa_addr->sa_family) {
+@@ -138,6 +155,12 @@ static int mdns_tinysvcmdns_register(char *ap1name, __attribute__((unused)) char
+ 
+     txt = txtwithoutmetadata;
+ 
++  /* HomePod Linux: use the TXT records the caller built (they carry the
++     configured model and, for AirPlay 2, the feature bits and keys) instead
++     of the fixed classic set, when they are supplied. */
++  if ((txt_records != NULL) && (*txt_records != NULL))
++    txt = txt_records;
++
+   if (config.regtype == NULL)
+     die("tinysvcmdns: regtype is null");
+ 
+@@ -156,6 +179,22 @@ static int mdns_tinysvcmdns_register(char *ap1name, __attribute__((unused)) char
+ 
+   free(extendedregtype);
+ 
++  /* HomePod Linux: also publish the AirPlay 2 service (_airplay._tcp) when
++     the caller supplies its TXT records. Upstream tinysvcmdns support only
++     ever published the classic _raop._tcp service. */
++  if ((secondary_txt_records != NULL) && (*secondary_txt_records != NULL) &&
++      (config.regtype2 != NULL) && (ap2name != NULL)) {
++    char *extendedregtype2 = malloc(strlen(config.regtype2) + strlen(".local") + 1);
++    if (extendedregtype2 == NULL)
++      die("tinysvcmdns: could not allocate memory for the AirPlay 2 service type");
++    strcpy(extendedregtype2, config.regtype2);
++    strcat(extendedregtype2, ".local");
++    struct mdns_service *svc2 = mdnsd_register_svc(svr, ap2name, extendedregtype2, port, NULL,
++                                                   (const char **)secondary_txt_records);
++    mdns_service_destroy(svc2);
++    free(extendedregtype2);
++  }
++
+   return 0;
+ }
+ 
+diff --git a/mdns/tinysvcmdns/tinysvcmdns.c b/mdns/tinysvcmdns/tinysvcmdns.c
+index 67921ce..1c590d9 100644
+--- a/mdns/tinysvcmdns/tinysvcmdns.c
++++ b/mdns/tinysvcmdns/tinysvcmdns.c
+@@ -537,15 +537,41 @@ void rr_set_nsec(struct rr_entry *rr_nsec, enum rr_type type) {
+   rr_nsec->data.NSEC.bitmap[type / 8] = 1 << (7 - (type % 8));
+ }
+ 
++/* HomePod Linux: a TXT character-string may be up to 255 bytes. The original
++   code built them with create_label(), which is for DNS name labels and
++   returns NULL above 63 bytes; that left a NULL entry in the record and
++   crashed on the AirPlay 2 "pk=<64 hex digits>" item. */
++static uint8_t *create_txt_string(const char *txt) {
++  size_t len;
++  uint8_t *s;
++  if (txt == NULL)
++    return NULL;
++  len = strlen(txt);
++  if (len > 255)
++    return NULL;
++  s = malloc(len + 2);
++  if (s) {
++    s[0] = (uint8_t)len;
++    memcpy((char *)s + 1, txt, len);
++    s[len + 1] = '\0';
++  }
++  return s;
++}
++
+ void rr_add_txt(struct rr_entry *rr_txt, const char *txt) {
+   struct rr_data_txt *txt_rec;
++  uint8_t *item;
+   assert(rr_txt->type == RR_TXT);
+ 
++  item = create_txt_string(txt);
++  if (item == NULL) // too long or out of memory: leave it out, never store NULL
++    return;
++
+   txt_rec = &rr_txt->data.TXT;
+ 
+   // is current data filled?
+   if (txt_rec->txt == NULL) {
+-    txt_rec->txt = create_label(txt);
++    txt_rec->txt = item;
+     return;
+   }
+ 
+@@ -555,9 +581,13 @@ void rr_add_txt(struct rr_entry *rr_txt, const char *txt) {
+ 
+   // create a new empty node
+   txt_rec->next = malloc(sizeof(struct rr_data_txt));
++  if (txt_rec->next == NULL) {
++    free(item);
++    return;
++  }
+ 
+   txt_rec = txt_rec->next;
+-  txt_rec->txt = create_label(txt);
++  txt_rec->txt = item;
+   txt_rec->next = NULL;
+ }
+ 
+@@ -1192,6 +1222,10 @@ struct mdns_service {
+ 
+ /////////////////////////////////
+ 
++/* HomePod Linux: IPv4 address (network order) of the interface to join the
++   mDNS group on and to send from. 0 = let the kernel choose (default route). */
++uint32_t tinysvcmdns_interface_ip = 0;
++
+ static int create_recv_sock() {
+   int sd = socket(AF_INET, SOCK_DGRAM, 0);
+   if (sd < 0) {
+@@ -1220,8 +1254,14 @@ static int create_recv_sock() {
+   // add membership to receiving socket
+   struct ip_mreq mreq;
+   memset(&mreq, 0, sizeof(struct ip_mreq));
+-  mreq.imr_interface.s_addr = htonl(INADDR_ANY);
++  mreq.imr_interface.s_addr = tinysvcmdns_interface_ip ? tinysvcmdns_interface_ip : htonl(INADDR_ANY);
+   mreq.imr_multiaddr.s_addr = inet_addr(MDNS_ADDR);
++  if (tinysvcmdns_interface_ip) {
++    struct in_addr out_if;
++    out_if.s_addr = tinysvcmdns_interface_ip;
++    if (setsockopt(sd, IPPROTO_IP, IP_MULTICAST_IF, (char *)&out_if, sizeof(out_if)) < 0)
++      log_message(LOG_ERR, "recv setsockopt(IP_MULTICAST_IF): %m");
++  }
+   if ((r = setsockopt(sd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq))) < 0) {
+     log_message(LOG_ERR, "recv setsockopt(IP_ADD_MEMBERSHIP): %m");
+     return r;
+diff --git a/player.c b/player.c
+index fcff87e..29ad82f 100644
+--- a/player.c
++++ b/player.c
+@@ -43,6 +43,10 @@
+ #include <sys/syslog.h>
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <poll.h>
++#include <signal.h>
++#include <sys/socket.h>
++#include <sys/wait.h>
+ 
+ 
+ #ifdef CONFIG_MBEDTLS
+@@ -415,8 +419,12 @@ static void av_packet_alloc_cleanup_handler(void *arg) {
+   av_packet_free(pkt);
+ }
+ 
++void apac_stop(void);
++int ssrc_is_apac(ssrc_t ssrc);
+ void clear_decoding_chain(rtsp_conn_info *conn) {
+   if (conn->incoming_ssrc != 0) {
++    if (ssrc_is_apac(conn->incoming_ssrc))
++      apac_stop();
+     avcodec_free_context(&conn->codec_context);
+     conn->incoming_ssrc = SSRC_NONE;
+   }
+@@ -434,8 +442,297 @@ void clear_software_resampler(rtsp_conn_info *conn) {
+ 
+ #endif
+ 
++#ifdef CONFIG_FFMPEG
++#define HOMEPOD_APAC 1
++
++// ---- APAC (Dolby Atmos over AirPlay), decoded by an external helper process -------------------
++// The helper (apacdec) loads the codec library taken from the user's own HomePod firmware.
++// It is a separate process on purpose: it is disposable, and none of that code runs in here.
++// Protocol: we send u32 length + packet; it replies u32 frames + frames * channels float32.
++
++int ssrc_is_apac(ssrc_t ssrc) {
++  switch (ssrc) {
++  case APAC_48000_2:
++  case APAC_48000_5P1:
++  case APAC_48000_5P1P2:
++  case APAC_48000_7P1:
++  case APAC_48000_7P1P4:
++  case APAC_48000_5P1P4:
++  case APAC_48000_7P1P2:
++    return 1;
++  default:
++    return 0;
++  }
++}
++
++static int apac_coded_channels(ssrc_t ssrc) {
++  switch (ssrc) {
++  case APAC_48000_2:
++    return 2;
++  case APAC_48000_5P1:
++    return 6;
++  case APAC_48000_5P1P2:
++  case APAC_48000_7P1:
++    return 8;
++  case APAC_48000_5P1P4:
++  case APAC_48000_7P1P2:
++    return 10;
++  case APAC_48000_7P1P4:
++    return 12;
++  default:
++    return 0;
++  }
++}
++
++// what the helper's output is handed on as: stereo, or the 8-channel bed a HomePod asks a sender
++// for (5.1.2: FL FR FC LFE SL SR HL HR). The speaker processing does the rest.
++static int apac_bed_channels(ssrc_t ssrc) { return ssrc == APAC_48000_2 ? 2 : 8; }
++
++// what kind of stream this is, for the room relay (see homepod-roomcast)
++static void note_stream_class(ssrc_t ssrc) {
++  const char *path = getenv("HOMEPOD_FORMAT_FILE");
++  int cls = 0;
++  const char *word = "bed";
++  char tmp[512];
++  FILE *f;
++  if (path == NULL)
++    path = "/run/homepod/airplay.format";
++  switch (ssrc) {
++  case ALAC_44100_S16_2:
++  case ALAC_48000_S24_2:
++  case AAC_44100_F24_2:
++  case AAC_48000_F24_2:
++  case APAC_48000_2:
++    cls = 1;
++    word = "stereo";
++    break;
++  case AAC_48000_F24_5P1:
++  case AAC_48000_F24_7P1:
++  case APAC_48000_5P1:
++  case APAC_48000_7P1:
++    cls = 2;
++    word = "surround";
++    break;
++  default:
++    break;
++  }
++  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
++  f = fopen(tmp, "w");
++  if (f != NULL) {
++    fprintf(f, "%d %s %s\n", cls, word, get_ssrc_name(ssrc));
++    fclose(f);
++    rename(tmp, path);
++  }
++}
++
++static const char *apac_helper_path(void) {
++  const char *s = getenv("HOMEPOD_APAC_HELPER");
++  return s ? s : "/usr/libexec/apacdec";
++}
++static const char *apac_image_path(void) {
++  const char *s = getenv("HOMEPOD_APAC_IMAGE");
++  return s ? s : "/usr/lib/nicotine/apac.img";
++}
++static int apac_available(void) {
++  static int known = -1;
++  if (known < 0) {
++    known = (access(apac_helper_path(), X_OK) == 0) && (access(apac_image_path(), R_OK) == 0);
++    if (known)
++      inform("APAC (Dolby Atmos) decoding is available: %s, %s.", apac_helper_path(),
++             apac_image_path());
++  }
++  return known;
++}
++
++static struct {
++  pthread_mutex_t lock;
++  pid_t pid;
++  int fd;
++  int channels;
++  unsigned failures;
++} apac = {PTHREAD_MUTEX_INITIALIZER, -1, -1, 0, 0};
++
++static void apac_stop_locked(void) {
++  if (apac.fd >= 0)
++    close(apac.fd);
++  apac.fd = -1;
++  if (apac.pid > 0) {
++    kill(apac.pid, SIGKILL);
++    waitpid(apac.pid, NULL, 0);
++  }
++  apac.pid = -1;
++  apac.channels = 0;
++}
++
++static int apac_start_locked(int channels) {
++  apac_stop_locked();
++  int sv[2];
++  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
++    return -1;
++  char chs[8];
++  snprintf(chs, sizeof(chs), "%d", channels);
++  pid_t pid = fork();
++  if (pid < 0) {
++    close(sv[0]);
++    close(sv[1]);
++    return -1;
++  }
++  if (pid == 0) {
++    dup2(sv[1], 0);
++    dup2(sv[1], 1);
++    int fd;
++    for (fd = 3; fd < 1024; fd++)
++      close(fd);
++    execl(apac_helper_path(), "apacdec", apac_image_path(), chs, (char *)NULL);
++    _exit(127);
++  }
++  close(sv[1]);
++  apac.pid = pid;
++  apac.fd = sv[0];
++  apac.channels = channels;
++  debug(1, "APAC helper started for %d channels (pid %d).", channels, (int)pid);
++  return 0;
++}
++
++static int apac_read(void *buf, size_t n, int timeout_ms) {
++  uint8_t *b = buf;
++  while (n) {
++    struct pollfd pfd = {apac.fd, POLLIN, 0};
++    if (poll(&pfd, 1, timeout_ms) <= 0)
++      return -1;
++    ssize_t r = recv(apac.fd, b, n, 0);
++    if (r <= 0)
++      return -1;
++    b += r;
++    n -= r;
++  }
++  return 0;
++}
++
++static int apac_write(const void *buf, size_t n) {
++  const uint8_t *b = buf;
++  while (n) {
++    ssize_t r = send(apac.fd, b, n, MSG_NOSIGNAL);
++    if (r <= 0)
++      return -1;
++    b += r;
++    n -= r;
++  }
++  return 0;
++}
++
++void apac_stop(void) {
++  pthread_mutex_lock(&apac.lock);
++  apac_stop_locked();
++  pthread_mutex_unlock(&apac.lock);
++}
++
++// decode one packet; returns the number of frames written to out (interleaved float), 0 on failure
++static int apac_decode(int channels, const uint8_t *data, size_t len, float *out, int max_frames) {
++  int frames = 0;
++  pthread_mutex_lock(&apac.lock);
++  if ((apac.fd < 0) || (apac.channels != channels)) {
++    if (apac.failures > 20) { // do not spin if the helper cannot run at all
++      pthread_mutex_unlock(&apac.lock);
++      return 0;
++    }
++    if (apac_start_locked(channels) != 0) {
++      apac.failures++;
++      pthread_mutex_unlock(&apac.lock);
++      return 0;
++    }
++  }
++  uint32_t l = len, n = 0;
++  // the first packet after a start waits for the helper to load the library
++  if ((apac_write(&l, 4) == 0) && (apac_write(data, len) == 0) && (apac_read(&n, 4, 3000) == 0) &&
++      (n <= (uint32_t)max_frames) &&
++      ((n == 0) || (apac_read(out, (size_t)n * channels * sizeof(float), 1000) == 0))) {
++    frames = n;
++    if (n)
++      apac.failures = 0;
++  } else {
++    debug(1, "APAC helper failed -- restarting it.");
++    apac.failures++;
++    apac_stop_locked();
++  }
++  pthread_mutex_unlock(&apac.lock);
++  return frames;
++}
++
++// Channel orders out of the decoder (from the system's own layout tables):
++//   5.1     L R C LFE Ls Rs
++//   5.1.2   L R C LFE Ls Rs Ltm Rtm          <- what a HomePod asks for; passed on as it is
++//   5.1.4   L R C LFE Ls Rs Vhl Vhr Ltr Rtr
++//   7.1     L R C LFE Ls Rs Rls Rrs
++//   7.1.2   L R C LFE Ls Rs Rls Rrs Ltm Rtm
++//   7.1.4   L R C LFE Ls Rs Rls Rrs Vhl Vhr Ltr Rtr
++// The larger layouts are only sent if they are advertised; they are folded into the 5.1.2 bed.
++static AVFrame *apac_block_to_avframe(rtsp_conn_info *conn, uint8_t *data, size_t len) {
++  ssrc_t ssrc = conn->incoming_ssrc;
++  int cch = apac_coded_channels(ssrc), bch = apac_bed_channels(ssrc);
++  if ((cch == 0) || (len == 0))
++    return NULL;
++  static float pcm[16 * 4096]; // only the one receiving thread decodes
++  int frames = apac_decode(cch, data, len, pcm, 4096);
++  if (frames <= 0)
++    return NULL;
++  AVFrame *f = av_frame_alloc();
++  if (f == NULL)
++    return NULL;
++  f->format = AV_SAMPLE_FMT_FLT;
++  f->nb_samples = frames;
++  f->sample_rate = 48000;
++  av_channel_layout_from_mask(&f->ch_layout,
++                              bch == 2 ? AV_CH_LAYOUT_STEREO : AV_CH_LAYOUT_5POINT1POINT2_BACK);
++  if (av_frame_get_buffer(f, 0) < 0) {
++    av_frame_free(&f);
++    return NULL;
++  }
++  float *o = (float *)f->extended_data[0];
++  const float h = 0.70710678f;
++  int i;
++  for (i = 0; i < frames; i++) {
++    const float *s = pcm + (size_t)i * cch;
++    float *d = o + (size_t)i * bch;
++    if (bch == 2) {
++      d[0] = s[0];
++      d[1] = s[1];
++      continue;
++    }
++    d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
++    d[4] = s[4]; d[5] = s[5]; d[6] = 0.0f; d[7] = 0.0f;
++    switch (ssrc) {
++    case APAC_48000_5P1P2:
++      d[6] = s[6]; d[7] = s[7];
++      break;
++    case APAC_48000_5P1P4:
++      d[6] = h * (s[6] + s[8]); d[7] = h * (s[7] + s[9]);
++      break;
++    case APAC_48000_7P1:
++      d[4] = h * (s[4] + s[6]); d[5] = h * (s[5] + s[7]);
++      break;
++    case APAC_48000_7P1P2:
++      d[4] = h * (s[4] + s[6]); d[5] = h * (s[5] + s[7]);
++      d[6] = s[8]; d[7] = s[9];
++      break;
++    case APAC_48000_7P1P4:
++      d[4] = h * (s[4] + s[6]); d[5] = h * (s[5] + s[7]);
++      d[6] = h * (s[8] + s[10]); d[7] = h * (s[9] + s[11]);
++      break;
++    default: // 5.1
++      break;
++    }
++  }
++  return f;
++}
++#endif
++
+ int ssrc_is_recognised(ssrc_t ssrc) {
+   int response = 0;
++#ifdef HOMEPOD_APAC
++  if (ssrc_is_apac(ssrc))
++    return apac_available();
++#endif
+   switch (ssrc) {
+   case ALAC_44100_S16_2:
+   case ALAC_48000_S24_2:
+@@ -488,6 +785,27 @@ const char *get_ssrc_name(ssrc_t ssrc) {
+   case AAC_48000_F24_7P1:
+     response = "AAC/48000/F24/7.1";
+     break;
++  case APAC_48000_2:
++    response = "APAC/48000/2";
++    break;
++  case APAC_48000_5P1:
++    response = "APAC/48000/5.1";
++    break;
++  case APAC_48000_5P1P2:
++    response = "APAC/48000/5.1.2 (Atmos)";
++    break;
++  case APAC_48000_7P1:
++    response = "APAC/48000/7.1";
++    break;
++  case APAC_48000_7P1P4:
++    response = "APAC/48000/7.1.4 (Atmos)";
++    break;
++  case APAC_48000_5P1P4:
++    response = "APAC/48000/5.1.4 (Atmos)";
++    break;
++  case APAC_48000_7P1P2:
++    response = "APAC/48000/7.1.2 (Atmos)";
++    break;
+   case SSRC_NONE:
+     response = "SSRC_NONE";
+     break;
+@@ -510,6 +828,13 @@ uint32_t get_ssrc_rate(ssrc_t ssrc) {
+   case AAC_48000_F24_2:
+   case AAC_48000_F24_5P1:
+   case AAC_48000_F24_7P1:
++  case APAC_48000_2:
++  case APAC_48000_5P1:
++  case APAC_48000_5P1P2:
++  case APAC_48000_7P1:
++  case APAC_48000_7P1P4:
++  case APAC_48000_5P1P4:
++  case APAC_48000_7P1P2:
+     response = 48000;
+     break;
+   default:
+@@ -529,6 +854,13 @@ size_t get_ssrc_block_length(ssrc_t ssrc) {
+   case AAC_48000_F24_2:
+   case AAC_48000_F24_5P1:
+   case AAC_48000_F24_7P1:
++  case APAC_48000_2:
++  case APAC_48000_5P1:
++  case APAC_48000_5P1P2:
++  case APAC_48000_7P1:
++  case APAC_48000_7P1P4:
++  case APAC_48000_5P1P4:
++  case APAC_48000_7P1P2:
+     response = 1024;
+     break;
+   default:
+@@ -581,6 +913,15 @@ int setup_software_resampler(rtsp_conn_info *conn, ssrc_t ssrc) {
+   case AAC_48000_F24_7P1:
+     channels = 8;
+     break;
++  case APAC_48000_2:
++  case APAC_48000_5P1:
++  case APAC_48000_5P1P2:
++  case APAC_48000_7P1:
++  case APAC_48000_7P1P4:
++  case APAC_48000_5P1P4:
++  case APAC_48000_7P1P2:
++    channels = apac_bed_channels(ssrc);
++    break;
+   default:
+     debug(1, "Can't set rate for %s.", get_ssrc_name(ssrc));
+     break;
+@@ -665,6 +1006,21 @@ int setup_software_resampler(rtsp_conn_info *conn, ssrc_t ssrc) {
+       input_layout = config.eight_channel_layout;
+       output_layout = config.eight_channel_layout; // assume no mixdown
+     } break;
++    case APAC_48000_2:
++    case APAC_48000_5P1:
++    case APAC_48000_5P1P2:
++    case APAC_48000_7P1:
++    case APAC_48000_7P1P4:
++    case APAC_48000_5P1P4:
++    case APAC_48000_7P1P2:
++    {
++      input_format = AV_SAMPLE_FMT_FLT; // interleaved float from the helper
++      int bch = apac_bed_channels(ssrc);
++      input_layout = bch == 2 ? AV_CH_LAYOUT_STEREO : AV_CH_LAYOUT_5POINT1POINT2_BACK;
++      output_layout = input_layout; // assume no mixdown
++      // music mixed for Atmos carries real bass in the LFE channel: keep it when mixing down
++      av_opt_set_double(swr, "lfe_mix_level", 0.7071, 0);
++    } break;
+     default:
+       debug(1, "unexpected SSRC: 0x%0x", ssrc);
+       break;
+@@ -1083,6 +1439,7 @@ void prepare_decoding_chain(rtsp_conn_info *conn, ssrc_t ssrc) {
+     // create the new decoding chain
+     conn->incoming_ssrc = ssrc;
+     if (conn->incoming_ssrc != SSRC_NONE) {
++      note_stream_class(ssrc);
+ 
+       // get a codec
+       // ideas and some code from https://rodic.fr/blog/libavcodec-tutorial-decode-audio-file/
+@@ -1090,13 +1447,23 @@ void prepare_decoding_chain(rtsp_conn_info *conn, ssrc_t ssrc) {
+ 
+       // Set up the decoder depending on the ssrc code.
+       int uncompressed_pcm = (conn->stream.type == ast_uncompressed);
++      if (ssrc_is_apac(ssrc)) {
++        // decoded by the helper process; nothing to set up in FFmpeg
++        conn->codec = NULL;
++        conn->codec_context = NULL;
++        conn->input_rate = get_ssrc_rate(ssrc);
++        conn->frames_per_packet = 1024;
++        conn->ffmpeg_decoding_chain_initialised = 1;
++        conn->input_format_is_valid = 1;
++        return;
++      }
+       switch (ssrc) {
+       case ALAC_44100_S16_2:
+       case ALAC_48000_S24_2:
+         // a classic stream announced as L16 (e.g. from pyatv/Home Assistant) carries
+         // big-endian 16-bit PCM in the same 352-frame packets rather than ALAC
+         conn->codec =
+-            avcodec_find_decoder(uncompressed_pcm ? AV_CODEC_ID_PCM_S16BE : AV_CODEC_ID_ALAC);
++            avcodec_find_decoder(uncompressed_pcm ? AV_CODEC_ID_PCM_S16LE : AV_CODEC_ID_ALAC);
+         break;
+       case AAC_44100_F24_2:
+       case AAC_48000_F24_2:
+@@ -1315,6 +1682,8 @@ AVFrame *block_to_avframe(rtsp_conn_info *conn, uint8_t *incoming_data,
+                           size_t incoming_data_length) {
+ 
+   AVFrame *decoded_frame = NULL;
++  if (ssrc_is_apac(conn->incoming_ssrc))
++    return apac_block_to_avframe(conn, incoming_data, incoming_data_length);
+   if (incoming_data_length > 8) {
+     int oldState;
+     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldState); // make this un-cancellable
+@@ -1322,6 +1691,16 @@ AVFrame *block_to_avframe(rtsp_conn_info *conn, uint8_t *incoming_data,
+     if (pkt) {
+       // push a deallocator -- av_packet_free(pkt);
+       pthread_cleanup_push(av_packet_alloc_cleanup_handler, &pkt);
++      if (conn->stream.type == ast_uncompressed) {
++        // L16 is big-endian; the PCM decoder in this build is the little-endian one
++        size_t bi;
++        incoming_data_length &= ~(size_t)3;
++        for (bi = 0; bi + 1 < incoming_data_length; bi += 2) {
++          uint8_t swap_byte = incoming_data[bi];
++          incoming_data[bi] = incoming_data[bi + 1];
++          incoming_data[bi + 1] = swap_byte;
++        }
++      }
+       pkt->data = incoming_data;
+       pkt->size = incoming_data_length;
+       int ret = avcodec_send_packet(conn->codec_context, pkt);
+@@ -2106,6 +2485,33 @@ void buffer_get_frame_cleanup_handler(__attribute__((unused)) void *arg) {
+ }
+ 
+ // get the next frame, when available. return 0 if underrun/stream reset.
++// homepod: how late packets are handed to the pipe, written to /run/homepod/airplay.sync
++// about every 20 seconds while playing: "packets average_us worst_us lead_ms".
++static void homepod_release_stats(int64_t late_ns) {
++  static int64_t sum_ns = 0, worst_ns = 0;
++  static int n = 0;
++  if ((late_ns < 0) || (late_ns > 2000000000LL))
++    return;
++  sum_ns += late_ns;
++  if (late_ns > worst_ns)
++    worst_ns = late_ns;
++  if (++n >= 1000) {
++    char line[96];
++    int len = snprintf(line, sizeof(line), "%d %lld %lld %.0f\n", n, (long long)(sum_ns / n / 1000),
++                       (long long)(worst_ns / 1000),
++                       config.audio_backend_buffer_desired_length * 1000.0);
++    int fd = open("/run/homepod/airplay.sync", O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, 0644);
++    if (fd >= 0) {
++      if (write(fd, line, len) < 0) {
++      }
++      close(fd);
++    }
++    n = 0;
++    sum_ns = 0;
++    worst_ns = 0;
++  }
++}
++
+ static abuf_t *buffer_get_frame(rtsp_conn_info *conn, int resync_requested) {
+   // int16_t buf_fill;
+   // struct timespec tn;
+@@ -2125,6 +2531,11 @@ static abuf_t *buffer_get_frame(rtsp_conn_info *conn, int resync_requested) {
+   pthread_mutex_lock_and_cleanup_push(&conn->ab_mutex);
+ 
+   int wait;
++  // homepod: time until the current frame is due for release (0 = not known). Without it,
++  // a backend with no delay() function (the pipe) gets its packets whenever this thread
++  // next happens to wake up -- up to four packet times late -- which is no good for
++  // multi-room sync. With it the thread sleeps exactly until the release time.
++  int64_t homepod_release_in_ns = 0;
+   long dac_delay = 0; // long because alsa returns a long
+ 
+   int output_device_has_been_primed =
+@@ -2133,6 +2544,7 @@ static abuf_t *buffer_get_frame(rtsp_conn_info *conn, int resync_requested) {
+   pthread_cleanup_push(buffer_get_frame_cleanup_handler,
+                        (void *)conn); // undo what's been done so far
+   do {
++    homepod_release_in_ns = 0;
+     // debug(3, "buffer_get_frame is iterating");
+     // we must have timing information before we can do anything here
+     if ((have_timestamp_timing_information(conn)) && (conn->input_format_is_valid != 0)) {
+@@ -2769,6 +3181,10 @@ static abuf_t *buffer_get_frame(rtsp_conn_info *conn, int resync_requested) {
+               ((conn->first_packet_timestamp != curframe->timestamp) && (resp == 0) &&
+                (current_buffer_delay < desired_buffer_latency))) {
+             do_wait = 0;
++            if (resp != 0)
++              homepod_release_stats((int64_t)(get_absolute_time_in_ns() - time_to_play));
++          } else if (resp != 0) {
++            homepod_release_in_ns = (int64_t)(time_to_play - get_absolute_time_in_ns());
+           }
+           // here, do a sanity check. if the time_to_play is not within a few seconds of the
+           // time now, the frame is probably not meant to be there, so let it go.
+@@ -2820,6 +3236,10 @@ static abuf_t *buffer_get_frame(rtsp_conn_info *conn, int resync_requested) {
+         time_to_wait_for_wakeup_ns *=
+             4 * conn->frames_per_packet; // about 4 * 7 mS for 352 frames per second
+       }
++      // homepod: wake up when the frame is due, not some time after
++      if ((homepod_release_in_ns > 0) &&
++          ((uint64_t)homepod_release_in_ns < time_to_wait_for_wakeup_ns))
++        time_to_wait_for_wakeup_ns = (uint64_t)homepod_release_in_ns;
+ 
+ #ifdef COMPILE_FOR_LINUX_AND_FREEBSD_AND_CYGWIN_AND_OPENBSD
+       uint64_t time_of_wakeup_ns = get_realtime_in_ns() + time_to_wait_for_wakeup_ns;
+@@ -5180,6 +5600,8 @@ void *player_thread_func(void *arg) {
+   pthread_exit(NULL);
+ }
+ 
++void homepod_volume_changed(double airplay_volume); // homepod_control.c
++
+ static void player_send_volume_metadata(uint8_t vol_mode_both, double airplay_volume,
+                                         double scaled_attenuation, int32_t max_db, int32_t min_db,
+                                         int32_t hw_max_db) {
+@@ -5202,6 +5624,7 @@ static void player_send_volume_metadata(uint8_t vol_mode_both, double airplay_vo
+     snprintf(dv, 127, "%.2f,%.2f,%.2f,%.2f", airplay_volume, 0.0, 0.0, 0.0);
+   }
+   send_ssnc_metadata('pvol', dv, strlen(dv), 1);
++  homepod_volume_changed(airplay_volume); // Nicotine: tell the speaker
+ #else
+   (void)vol_mode_both;
+   (void)airplay_volume;
+diff --git a/player.h b/player.h
+index 0a85216..c2425fa 100644
+--- a/player.h
++++ b/player.h
+@@ -157,6 +157,14 @@ typedef enum {
+   AAC_48000_F24_2 = 0x17000000,
+   AAC_48000_F24_5P1 = 0x27000000,
+   AAC_48000_F24_7P1 = 0x28000000,
++  // APAC, the codec AirPlay uses for Dolby Atmos (audio format numbers 64-68, 76, 77)
++  APAC_48000_2 = 0x40000000,
++  APAC_48000_5P1 = 0x41000000,
++  APAC_48000_5P1P2 = 0x42000000,
++  APAC_48000_7P1 = 0x43000000,
++  APAC_48000_7P1P4 = 0x44000000,
++  APAC_48000_5P1P4 = 0x4C000000,
++  APAC_48000_7P1P2 = 0x4D000000,
+ } ssrc_t;
+ 
+ typedef struct audio_buffer_entry { // decoded audio packets
+@@ -672,6 +680,7 @@ size_t get_ssrc_block_length(ssrc_t ssrc);
+ const char *get_category_string(airplay_stream_c cat);
+ 
+ int ssrc_is_recognised(ssrc_t ssrc);
++int ssrc_is_apac(ssrc_t ssrc);
+ int ssrc_is_aac(ssrc_t ssrc); // used to decide if a mute might be needed (AAC only)
+ void prepare_decoding_chain(rtsp_conn_info *conn, ssrc_t ssrc); // also sets up timing stuff
+ void clear_decoding_chain(rtsp_conn_info *conn);                // tear down the decoding chain
+diff --git a/rtsp.c b/rtsp.c
+index 0c06b3a..ba87edd 100644
+--- a/rtsp.c
++++ b/rtsp.c
+@@ -1242,6 +1242,46 @@ plist_t generateInfoPlist(rtsp_conn_info *conn) {
+             bufferStreamFormats |= 0x08000000000L; // AAC-LC/48K/F24/5.1
+         }
+       }
++      {
++        // HomePod experiment: advertise a stock HomePod's buffered formats to see what a
++        // sender then offers. HOMEPOD_AP2_FORMATS=0x... replaces the mask;
++        // HOMEPOD_AP2_FORMATS_EXT=71,72,... adds supportedAudioFormatsExtended.
++        const char *hp_formats = getenv("HOMEPOD_AP2_FORMATS");
++        if ((hp_formats != NULL) && (hp_formats[0] != 0)) {
++          bufferStreamFormats = strtoull(hp_formats, NULL, 0);
++          debug(1, "HomePod experiment: bufferStream formats advertised as 0x%" PRIX64 ".", bufferStreamFormats);
++        }
++        const char *hp_ext = getenv("HOMEPOD_AP2_FORMATS_EXT");
++        char auto_ext[320];
++        if (((hp_ext == NULL) || (hp_ext[0] == 0)) && (ssrc_is_recognised(APAC_48000_5P1P2) != 0)) {
++          // Dolby Atmos: the APAC decoder is installed, so ask for what a HomePod asks for --
++          // every format in the mask above, plus APAC 5.1 (65) and 5.1.2 (66). Format numbers
++          // above 63 do not fit the mask; senders read them from this list.
++          size_t used = 0;
++          int bit;
++          auto_ext[0] = 0;
++          for (bit = 0; bit < 64; bit++)
++            if ((bufferStreamFormats >> bit) & 1)
++              used += snprintf(auto_ext + used, sizeof(auto_ext) - used, "%d,", bit);
++          snprintf(auto_ext + used, sizeof(auto_ext) - used, "65,66");
++          hp_ext = auto_ext;
++          debug(2, "bufferStream formats, extended list: %s.", auto_ext);
++        }
++        if ((hp_ext != NULL) && (hp_ext[0] != 0)) {
++          plist_t ext_array = plist_new_array();
++          char *copy = strdup(hp_ext);
++          char *save = NULL;
++          char *tok = strtok_r(copy, ",", &save);
++          while (tok != NULL) {
++            plist_array_append_item(ext_array, plist_new_uint(strtoull(tok, NULL, 0)));
++            tok = strtok_r(NULL, ",", &save);
++          }
++          free(copy);
++          plist_t ext_dict = plist_new_dict();
++          plist_dict_set_item(ext_dict, "bufferStream", ext_array);
++          plist_dict_set_item(response_plist, "supportedAudioFormatsExtended", ext_dict);
++        }
++      }
+       plist_dict_set_item(supported_formats_plist, "bufferStream",
+                           plist_new_uint(bufferStreamFormats));
+       debug(4, "bufferedStream formats: 0x%" PRIX64 ".", bufferStreamFormats);
+@@ -2925,6 +2965,8 @@ void handle_setup_2(rtsp_conn_info *conn, rtsp_message *req, rtsp_message *resp)
+           item = plist_dict_get_item(stream0, "audioFormat"); // audio format
+           if (item != NULL) {
+             plist_get_uint_val(item, &conn->audio_format);
++            debug(1, "Connection %d: HomePod experiment: sender asks for audioFormat 0x%" PRIX64 ".",
++                  conn->connection_number, (uint64_t)conn->audio_format);
+             // see https://emanuelecozzi.net/docs/airplay2/audio/ for values
+             // seems to be only the initial format -- it seems as if it can change dynamically
+           } else {
+diff --git a/shairport.c b/shairport.c
+index a9cf7fb..243ec5e 100644
+--- a/shairport.c
++++ b/shairport.c
+@@ -726,6 +726,14 @@ int parse_options(int argc, char **argv) {
+       if (config_lookup_non_empty_string(config.cfg, "general.name", &str)) {
+         raw_service_name = (char *)str;
+       }
++      /* HomePod Linux: the model identifier advertised in the Bonjour TXT
++         records ("am=" for _raop._tcp, "model=" for _airplay._tcp) and in the
++         AirPlay 2 /info reply. Default stays "ShairportSync". */
++      if (config_lookup_non_empty_string(config.cfg, "general.model", &str)) {
++        if (config.model)
++          free(config.model);
++        config.model = strdup(str);
++      }
+ #ifdef CONFIG_LIBDAEMON
+       /* Get the Daemonize setting. */
+       config_set_lookup_bool(config.cfg, "sessioncontrol.daemonize_with_pid_file", &daemonisewith);
+@@ -2043,6 +2051,12 @@ int parse_options(int argc, char **argv) {
+ 
+   // now generate the fex field
+   uint8_t fexbytes[8];
++  {
++    // HomePod experiment: HOMEPOD_AP2_FEATURES_OR=0x... adds feature bits to the advertisement
++    const char *hp_feat = getenv("HOMEPOD_AP2_FEATURES_OR");
++    if ((hp_feat != NULL) && (hp_feat[0] != 0))
++      config.airplay_features |= strtoull(hp_feat, NULL, 0);
++  }
+   uint64_t temp = config.airplay_features;
+   debug(4, "airplay_features are %" PRIx64 ".", temp);
+   for (i = 0; i < 8; i++) {
+@@ -2720,6 +2734,8 @@ const char *av_channel_layout_name(uint64_t channel_layout) {
+ 
+ #endif
+ 
++#include "homepod_control.c"
++
+ int main(int argc, char **argv) {
+   exit_init(); // initialise the exit handler to give us a clean safe exit on request
+   // initialise debug messages stuff -- level 0, no elapsed time, relative time, file and line
+@@ -3780,6 +3796,7 @@ int main(int argc, char **argv) {
+   debug(4, "create an RTSP listener");
+   // note: the Avahi Threaded Poll thread will be named after whatever name you use here too, so
+   // you'll see two threads named "listener" or whatever...
++  homepod_control_start(); // Nicotine: control FIFO and volume reports
+   named_pthread_create(&rtsp_listener_thread, NULL, &rtsp_listen_loop, NULL, "listener");
+   atexit(exit_rtsp_listener);
+ 
