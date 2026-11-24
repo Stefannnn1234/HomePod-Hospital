@@ -119,6 +119,10 @@ struct DiagsShellView: View {
             if !model.diagsConnected {
                 Text("115200 baud, 8N1. Boot the pod with \"Boot Factory DIAGS\" (Restore → Check health, with advanced options on) or dev_boot.sh, then connect. The shell's prompt looks like \(DiagsCommandReference.prompt).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                DFUGuideButton(action: "Boot Factory DIAGS",
+                               blocker: { model.blocker(for: $0, kind: .quickCheck) },
+                               start: { model.bootFactoryDiags(on: $0) })
+                    .controlSize(.small)
             }
         }
     }

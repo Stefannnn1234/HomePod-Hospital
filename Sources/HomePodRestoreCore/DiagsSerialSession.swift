@@ -735,7 +735,7 @@ public struct DiagsQuickAction: Sendable, Equatable, Identifiable {
         // Factory history
         case controlBits, controlBitDump
         // Power / PMU
-        case pmuEvents, pmuADC, pmuRegisters, buckCheck, rtc
+        case pmuEvents, pmuADC, pmuRegisters, buckCheck, rtc, iBootBootState
         // NAND
         case nandTests, nandParams
         // Memory
@@ -796,6 +796,8 @@ public struct DiagsQuickAction: Sendable, Equatable, Identifiable {
             return "The unit's factory test-station history: which stations it passed. Long output (256 stations) — scroll, or save it."
         case .pmuEvents:
             return "Latched PMU fault and voltage events — the first thing to read on a board that won't stay up."
+        case .iBootBootState:
+            return "Reads iBoot's boot bookkeeping from the PMU (0x4000–0x4014): how many boots failed, at which stage, and whether a DFU request is pending. Only reads."
         case .pmuADC:
             return "Sends `help pmuadc`: the channel arguments haven't been captured yet, so this prints the usage instead of guessing."
         case .nandTests:
@@ -883,6 +885,8 @@ public struct DiagsQuickAction: Sendable, Equatable, Identifiable {
                          commands: ["pmureg"]),
         DiagsQuickAction(kind: .buckCheck, title: "Buck Check", symbol: "bolt", category: .power,
                          commands: ["buckcheck"]),
+        DiagsQuickAction(kind: .iBootBootState, title: "iBoot Boot State", symbol: "arrow.triangle.2.circlepath", category: .power,
+                         commands: [PMUBootState.diagsReadCommand]),
         DiagsQuickAction(kind: .rtc, title: "RTC", symbol: "clock", category: .power,
                          commands: ["rtc --get"]),
         DiagsQuickAction(kind: .wifi, title: "WiFi Info", symbol: "wifi", category: .radio,

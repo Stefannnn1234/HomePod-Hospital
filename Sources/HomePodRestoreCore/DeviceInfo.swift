@@ -82,8 +82,10 @@ public struct IBootSerial: Equatable, Sendable {
     public var isPwned: Bool { pwnd != nil }
     /// A8 (t7000) is the 1st-gen HomePod's SoC.
     public var isA8: Bool { cpid == 0x7000 }
-    /// AudioAccessory1,1 board id (b238aap) is 0x38 (56).
-    public var isHomePodBoard: Bool { bdid == 0x38 }
+    /// Which A8 board this is (nil when it isn't an A8 or the id is unknown).
+    public var a8Board: A8Board? { isA8 ? A8Board.identify(bdid) : nil }
+    /// A B238a (AudioAccessory1,1) board: production 0x38 or dev-fused 0x39.
+    public var isHomePodBoard: Bool { a8Board?.kind == .homePod }
     public var ecidString: String? { ecid.map { String(format: "0x%016llX", $0) } }
 }
 

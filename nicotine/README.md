@@ -48,6 +48,13 @@ audioOS 16.4 files on first use (see `docs/nicotine-boot.md`).
   `/usr/lib/nicotine/pysite` in the skeleton is pyatv 0.16.1 with its dependencies, unmodified wheels
   from PyPI for Python 3.14 on musl/aarch64 (MIT, BSD and Apache licences), used to play a room on
   other AirPlay speakers.
+  Since build 116 the skeleton also has:
+  - `/usr/sbin/homepod-pmu` — iBoot's boot bookkeeping in the PMU scratch area (boot-error count,
+    the stage it failed at) and `dfu-on-reset`, which makes the next reset come up in DFU without
+    the upside-down power-up. That is LLB DFU, not SecureROM DFU: gaster / checkm8 can't run there.
+  - `/usr/sbin/homepod-i2c-pins` — how the SoC pins of the four I2C buses are set (reads only).
+  - `/www/cgi-bin/board.cgi` — both readings as JSON for the web UI's Devices tab, which shows them
+    as the "Boot State" and "I2C Pins" cards (GET, reads only).
 - `payload-from-ipsw.sh` — the whole build from one 18.3 IPSW (what `build-app.sh` runs).
 - `build-payload.sh` — assembles the payload from the kit plus firmware and device tree.
 - `tools/pack.py` — IMG4 packer and `--unwrap`, Python standard library only.
@@ -175,6 +182,10 @@ Set up on the web UI's Speaker tab ("Room" card). The programs are `homepod-room
   a speaker that plays single channels, so such a speaker fills in: by default with its side of
   the stereo recording; per speaker this can be left, right, both, or silence. With 5.1 or 7.1
   sound (no heights) a height speaker plays half front and half surround of its side.
+- **Subwoofer.** A speaker given the LFE channel with "Bass only" plays what an AV receiver sends
+  a subwoofer, for every kind of music: the LFE channel plus the low end of all the other channels
+  (below 120 Hz, 10 dB down, as an LFE channel is mixed). Many Atmos albums leave the LFE channel
+  empty, and stereo has none, so without this such a speaker would often be silent.
 - **Other AirPlay speakers** (a switch on the card, off by default): the leader also plays the
   room on AirPlay speakers that are not Nicotine pods (`homepod-roomsend`, which uses pyatv as the
   sender, and `/usr/libexec/hpmix`). Each gets a part like a pod, or a pair of channels on its

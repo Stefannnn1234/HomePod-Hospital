@@ -49,11 +49,15 @@ first time.
 
 Then connect a HomePod. The Restore tab shows the same steps:
 
-1. Turn the HomePod upside down and pry off the rubber base to reach the debug port.
+1. Pry off the rubber base to reach the debug port (first time only).
 2. Press the USB adapter onto the port.
-3. Plug the USB cable into your Mac.
-4. Plug in HomePod power **last**. USB first, then power.
-5. When the HomePod appears in the app, turn it right-side up and click Restore.
+3. Plug the USB cable into your Mac. Leave the HomePod's power unplugged.
+4. Turn the HomePod upside down.
+5. Plug in HomePod power **last**. USB first, then power.
+6. When the HomePod appears in the app in DFU mode, turn it right-side up — **then** click Restore.
+   It stays in DFU when you turn it over. **Show me how** next to the Restore and Boot buttons
+   walks through it in three steps — connect (upside down), power (it waits until the Mac sees
+   DFU mode, with tips if it doesn't), right-side up — and clicking **Done** starts that restore or boot.
 
 ## A tour of the app
 
@@ -110,8 +114,8 @@ whatever was on it before. It also means the Mac has to start it again after eve
 
 1. **Once per Mac:** with a HomePod in DFU mode, open the **Boot loaders** card and click
    **Build release boot loaders**. The app builds them from Apple's audioOS 16.4 update.
-2. Put the HomePod in DFU mode (upside down, adapter on, USB first, then power).
-3. Click **Boot Nicotine** and turn the HomePod right-side up.
+2. Put the HomePod in DFU mode: adapter on and USB in the Mac, upside down, then power.
+3. Once it shows up in DFU mode, turn the HomePod right-side up, then click **Boot Nicotine**.
 4. After 30 to 40 seconds **Open web UI** appears. The HomePod answers at `http://172.16.42.1/`
    over the USB cable.
 5. Join your WiFi in the web UI's WiFi tab. The HomePod then shows up as an AirPlay speaker.

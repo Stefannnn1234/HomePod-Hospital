@@ -196,9 +196,9 @@ extension AppModel {
             return "Another boot is in progress. Let it finish first."
         }
         let dfu = devices.filter { $0.mode == .dfu }
-        if dfu.isEmpty { return "Put the HomePod in DFU mode (upside down, adapter attached, USB first, then power)." }
+        if dfu.isEmpty { return DFUInstructions.short(then: "Build release boot loaders") }
         if devices.count > 1 { return "Connect only the one HomePod. This step can't choose between several." }
-        if let ib = dfu[0].iboot, !ib.isA8 { return "This isn't a 1st-gen HomePod (A8 chip)." }
+        if let ib = dfu[0].iboot, let why = A8BoardGate.bootBlocker(ib) { return why }
         return nil
     }
 
@@ -325,9 +325,9 @@ extension AppModel {
             return "Another boot is in progress. Let it finish first."
         }
         let dfu = devices.filter { $0.mode == .dfu }
-        if dfu.isEmpty { return "Put the HomePod in DFU mode: upside down, adapter attached, USB connected, then plug in power." }
+        if dfu.isEmpty { return DFUInstructions.short(then: "Boot Nicotine") }
         if devices.count > 1 { return "Connect only the one HomePod you want to boot. This boot can't choose between several." }
-        if let ib = dfu[0].iboot, !ib.isA8 { return "This isn't a 1st-gen HomePod (A8 chip)." }
+        if let ib = dfu[0].iboot, let why = A8BoardGate.bootBlocker(ib) { return why }
         if !nicotineHasReleaseIBoot {
             return "Build the boot loaders first: open the \"Boot loaders\" card below and click \"Build release boot loaders\". It's a one-time step per Mac."
         }
@@ -356,7 +356,7 @@ extension AppModel {
 
         var st = NicotineUIState()
         st.stage = .booting
-        st.log = ["Flip the HomePod right-side up now if it is still upside down from DFU.",
+        st.log = ["If the HomePod is still upside down from DFU, turn it right-side up now.",
                   "Booting Nicotine from \(layout.root.path) (\(payload.source.title.lowercased()))"]
         if let manifest = payload.manifest {
             st.log.append("Payload: \(manifest.summary). Checking its \(manifest.entries.count) files against the MANIFEST first.")

@@ -13,11 +13,12 @@ is written by the boot.
 
 1. Build the app (`./scripts/build-app.sh`; it puts the tools and a Nicotine payload inside) and open
    it. Sidebar → **Nicotine (Linux)**.
-2. Put the HomePod in DFU: upside down, USB adapter on the debug port, USB cable to the Mac, then
-   power. Only one HomePod may be connected.
+2. Put the HomePod in DFU: USB adapter on the debug port and its cable in the Mac, HomePod upside
+   down, then power. Once it shows up in DFU mode, turn it right-side up. Only one HomePod may be
+   connected.
 3. First time on this Mac: **Boot loaders** card → **Build release boot loaders**. It takes a minute
    or two, downloads about 1 MB from Apple and writes nothing to the pod.
-4. **Boot Nicotine**, and turn the pod right-side up. After 30 to 40 seconds it answers at
+4. **Boot Nicotine** (the pod is already right-side up). After 30 to 40 seconds it answers at
    `172.16.42.1` over the USB cable and **Open web UI** appears.
 5. In the web UI, join WiFi. Then click **Save settings**, so the Mac can put them back after the
    next power cut.
@@ -260,7 +261,6 @@ password is planned.
 
 - Passing the pod's ECID to gaster (`GASTER_ECID`, patched build) and `irecovery -i`, so that several
   pods could be connected.
-- A countdown to flip the pod upright, as the SSH-ramdisk boot has.
 - Download of a payload by URL (deliberately absent; see `payloadDownloadURL`).
 - A universal (arm64 + x86_64) tool bundle, so other Macs need no installer either.
 - Picking the WiFi calibration file and Bluetooth patch by radio module vendor (only the USI

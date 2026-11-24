@@ -42,9 +42,9 @@ struct NicotineView: View {
         Card {
             DisclosureGroup("First time? How this works") {
                 VStack(alignment: .leading, spacing: 6) {
-                    guideStep(1, "Put the HomePod in DFU mode: turn it upside down, attach the USB adapter to the debug port under the rubber base, and connect the cable to this Mac.")
-                    guideStep(2, "Then plug in power. Order matters: USB first, then power. Wait until the Boot card below stops asking for a HomePod in DFU mode.")
-                    guideStep(3, "Click Boot Nicotine and turn the HomePod right-side up. The boot files go across in a few seconds.")
+                    guideStep(1, "Attach the USB adapter to the debug port under the rubber base and plug its cable into this Mac. Leave the HomePod's power unplugged.")
+                    guideStep(2, "Turn the HomePod upside down, then plug in power. Order matters: USB first, then power. Wait until the Boot card below stops asking for a HomePod in DFU mode.")
+                    guideStep(3, "Turn the HomePod right-side up, then click Boot Nicotine. The boot files go across in a few seconds. (\"Show me how\" next to the button walks through it.)")
                     guideStep(4, "After 30 to 40 seconds the HomePod answers at \(NicotinePod.usbAddress) over the USB cable and \"Open web UI\" appears below.")
                     guideStep(5, "First thing to do there: join your WiFi in the web UI's WiFi tab. The Nicotine image that comes with the app knows no network. After that the HomePod shows up as an AirPlay speaker.")
                     guideStep(6, "Click \"Save settings\" once it is set up. The HomePod forgets everything when it loses power; this Mac puts the settings back after the next boot.")
@@ -172,7 +172,7 @@ struct NicotineView: View {
                     Button("Stop") { model.cancelNicotineBoot() }
                         .controlSize(.small)
                 }
-                Text("This takes about a minute. The HomePod should be right-side up by now.")
+                Text("This takes about a minute. The HomePod should already be right-side up; if it isn't, turn it over now.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 let blocker = model.nicotineBlocker()
@@ -189,15 +189,21 @@ struct NicotineView: View {
                     Text("The boot needs gaster and irecovery. The installer opens in Terminal (the same one as on the Setup page) and takes a few minutes the first time.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Button {
-                    model.bootNicotine()
-                } label: {
-                    Label("Boot Nicotine", systemImage: "play.fill")
-                        .frame(minWidth: 120)
+                HStack {
+                    Button {
+                        model.bootNicotine()
+                    } label: {
+                        Label("Boot Nicotine", systemImage: "play.fill")
+                            .frame(minWidth: 120)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(blocker != nil)
+                    DFUGuideButton(action: "Boot Nicotine",
+                                   blocker: { _ in model.nicotineBlocker() },
+                                   start: { _ in model.bootNicotine() })
+                        .controlSize(.large)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(blocker != nil)
                 Text("Same steps as boot-linux.sh: gaster unlocks the HomePod, then the bootloaders, the device tree and the Nicotine image are sent with irecovery.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }

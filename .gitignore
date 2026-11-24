@@ -50,3 +50,5 @@ __pycache__/
 
 # Kernel/m1n1 build tree made by nicotine/kernel/build.sh
 nicotine/kernel/work/
+docs/knowledge-transfer.md
+docs/knowledge-transfer.md

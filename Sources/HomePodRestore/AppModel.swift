@@ -44,6 +44,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var devices: [ConnectedDevice] = []
     @Published private(set) var jobs: [UInt32: JobState] = [:]
     @Published private(set) var history: [JobState] = []
+    /// NAND health read from running pods, by USB location (AppModelNAND).
+    @Published var nandHealth: [UInt32: NANDHealthState] = [:]
 
     // Tools
     @Published private(set) var tools: [ToolStatus] = []
@@ -255,7 +257,11 @@ final class AppModel: ObservableObject {
         if kind != .quickCheck && selectedFirmware == nil { return "Choose or download firmware first." }
         guard device.mode == .dfu else { return "The HomePod needs to be in DFU mode." }
         guard let ib = device.iboot, ib.ecid != nil else { return "Couldn't read this device's ID." }
-        if !ib.isA8 { return "This isn't a 1st-gen HomePod (A8 chip)." }
+        // A quick check only unlocks the chip, so any HomePod board will do. A
+        // restore or boot test needs a firmware build for this exact board.
+        if let why = kind == .quickCheck ? A8BoardGate.bootBlocker(ib) : A8BoardGate.restoreBlocker(ib) {
+            return why
+        }
         if !gasterSupportsECID {
             let otherDFU = devices.filter { $0.mode == .dfu && $0.locationID != device.locationID }
             let otherUnlocking = jobs.values.contains { $0.isRunning && $0.snapshot.phase <= .unlocking && $0.job.locationID != device.locationID }

@@ -52,7 +52,7 @@ struct DiagnosticsSheet: View {
             Text(current.phase.title).font(.headline)
         }
         if (model.syscfgBootMode == .sshrd || model.syscfgBootMode == .diags) && current.phase <= .connecting {
-            Text("If the HomePod is upside down for DFU, flip it upright once you see boot activity below.")
+            Text("The HomePod should be right-side up for this. If it's still upside down, turn it over now.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         logTail
@@ -97,6 +97,10 @@ struct DiagnosticsSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
 
+        if let raw = bundle.panicLog, let panic = PanicLogReport.decode(raw) {
+            panicView(panic)
+        }
+
         if !bundle.notes.isEmpty {
             ForEach(Array(bundle.notes.enumerated()), id: \.offset) { _, note in
                 Label(note, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
@@ -109,6 +113,29 @@ struct DiagnosticsSheet: View {
         } else {
             Button { save(bundle) } label: { Label("Save diagnostics…", systemImage: "square.and.arrow.down") }
         }
+    }
+
+    /// The saved panic, decoded: its `panic(...)` line up front, the rest folded.
+    @ViewBuilder private func panicView(_ panic: PanicLogReport) -> some View {
+        Label("This pod has panicked before", systemImage: "exclamationmark.triangle.fill")
+            .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+        Text(panic.headline)
+            .font(.system(.callout, design: .monospaced))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+        ForEach(Array(panic.notes.enumerated()), id: \.offset) { _, note in
+            Label(note, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+        }
+        DisclosureGroup("Full panic log") {
+            ScrollView {
+                Text(panic.panicText + (panic.otherLog.map { "\n\n--- later console output ---\n" + $0 } ?? ""))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 220)
+        }
+        .font(.callout)
     }
 
     private func row(_ label: String, _ value: String) -> some View {

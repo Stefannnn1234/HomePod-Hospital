@@ -188,6 +188,11 @@ extension AppModel {
             case .audioInit:
                 // Each of these sends `ampcontroller --init` as its first line.
                 if results.first?.succeeded == true { self.diagsAudioReady = true }
+            case .iBootBootState:
+                if let out = results.first?.cleanOutput {
+                    self.appendDiagsNote(action.title, PMUBootState.parse(pmurwOutput: out)?.summary
+                        ?? "Couldn't pick 21 register bytes out of that output. Read them from the transcript above (0x4002 = boot-error count, 0x4003 = stage, 0x4014 = DFU request; 0xA0 means set).")
+                }
             default:
                 break
             }

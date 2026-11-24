@@ -77,6 +77,8 @@ struct HealthDeviceCard: View {
                             .disabled(device.iboot?.ecid == nil || model.diag?.running == true)
                         Button("Full diagnostics") { model.runFullDiagnostics(on: device) }
                             .disabled(device.mode != .dfu || device.iboot?.ecid == nil || model.fullDiag?.running == true)
+                        DFUGuideButton(action: "Quick check or Boot test", preferredLocation: device.locationID)
+                            .buttonStyle(.bordered)
                         if let b = model.blocker(for: device, kind: .bootTest) {
                             Text(b).font(.caption).foregroundStyle(.secondary)
                         }
@@ -117,8 +119,20 @@ struct HealthChecklist: View {
             if let ib = d.iboot {
                 out.append(Item(title: "Processor", detail: ib.isA8 ? "Apple A8 (correct for HomePod)" : "Unexpected chip \(ib.cpid.map { String(format: "0x%X", $0) } ?? "?")",
                                 result: ib.isA8 ? .pass : .fail))
-                out.append(Item(title: "Logic board", detail: ib.isHomePodBoard ? "HomePod board (b238)" : "Board \(ib.bdid.map { String(format: "0x%X", $0) } ?? "?")",
-                                result: ib.isHomePodBoard ? .pass : .warn))
+                if let board = ib.a8Board {
+                    let detail: String
+                    switch board.kind {
+                    case .homePod where board.isRetailHomePod: detail = "HomePod board (\(board.label))"
+                    case .homePod: detail = "HomePod board, development-fused (\(board.label)) — retail firmware won't restore it"
+                    case .homePodPrototype: detail = "Pre-production HomePod board (\(board.label)) — no firmware exists for it"
+                    case .otherProduct: detail = "\(board.productName) (\(board.label)) — not a HomePod"
+                    }
+                    out.append(Item(title: "Logic board", detail: detail,
+                                    result: board.isRetailHomePod ? .pass : (board.kind == .otherProduct ? .fail : .warn)))
+                } else {
+                    out.append(Item(title: "Logic board", detail: "Board \(ib.bdid.map { String(format: "0x%X", $0) } ?? "?") — not a known A8 board",
+                                    result: .warn))
+                }
                 if let srtg = ib.srtg { out.append(Item(title: "Boot ROM", detail: srtg, result: .pass)) }
             }
         }

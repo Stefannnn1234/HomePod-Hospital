@@ -459,6 +459,13 @@ public enum DiagsCommandReference {
                examples: [E("pmureg", "Dump all PMU registers.")],
                risk: .unknown,
                repairUse: "Save the dump from a known-good board and diff it against a faulty one."),
+        C(name: "pmurw", category: .power,
+          syntax: ["pmurw -r <0xBBRR> <count>"],
+          summary: "Reads the power chip's registers by 16-bit address (bank, register). `-r` only reads (confirmed on a real unit: `pmurw -r 0x0426 2`). The write form hasn't been captured — run `help pmurw` before writing anything.",
+          examples: [E(PMUBootState.diagsReadCommand, "iBoot's boot bookkeeping in the PMU scratch area: boot-error count, the stage it failed at, and the enter-DFU request byte (0x4014)."),
+                     E("pmurw -r 0x0426 2", "PMU GPIO 20 — the Nitrogen amp MCU's reset line.")],
+          risk: .unknown, source: .benchTested,
+          repairUse: "A board that boot-loops: a nonzero iBoot error count and its stage show where boot gives up."),
         listed("pmuevent", .power, "Prints the PMU's latched events: faults, under- and over-voltage, and what woke or shut down the board.",
                syntax: ["pmuevent all"],
                examples: [E("pmuevent all", "Every latched PMU event.")],
@@ -667,6 +674,8 @@ public enum DiagsCommandReference {
         case "pmureg":
             // Bare, it dumps every register. With arguments it may write one.
             return words.count == 1 ? .readOnly : command.risk
+        case "pmurw":
+            return words.count >= 2 && words[1] == "-r" ? .readOnly : command.risk
         case "nvram":
             return words.count == 2 && words[1] == "-p" ? .readOnly : command.risk
         case "device":

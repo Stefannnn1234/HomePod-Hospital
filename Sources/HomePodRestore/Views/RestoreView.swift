@@ -159,9 +159,17 @@ struct ConnectionGuide: View {
                 Divider()
             }
             VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("Do these in order, then click Restore (or Boot).").font(.callout.weight(.medium))
+                    Spacer()
+                    DFUGuideButton(action: "Restore",
+                                   blocker: { model.blocker(for: $0, kind: .restore) },
+                                   start: { model.startJob(.restore, on: $0) })
+                        .controlSize(.small)
+                }
                 StepRow(number: 1, icon: "rectangle.portrait.bottomhalf.inset.filled",
-                        title: "Flip it and open the base",
-                        detail: "Keep the HomePod upside down. Pry off the rubber base (between the base and the mesh) to reach the debug port, and clean off the adhesive so the adapter sits flat.")
+                        title: "Open the base (first time only)",
+                        detail: "Pry off the rubber base (between the base and the mesh) to reach the debug port, and clean off the adhesive so the adapter sits flat.")
                 StepRow(number: 2, icon: "cable.connector",
                         title: "Attach the USB adapter",
                         detail: "Press the adapter onto the debug port. Don't solder to the port.")
@@ -171,19 +179,22 @@ struct ConnectionGuide: View {
                 }
                 StepRow(number: 3, icon: "laptopcomputer",
                         title: "Plug USB into your Mac",
-                        detail: "Use a port directly on your Mac if you can (avoid unpowered hubs). If macOS asks to \"Allow accessory to connect\", click Allow.")
-                StepRow(number: 4, icon: "powerplug.fill",
+                        detail: "Use a port directly on your Mac if you can (avoid unpowered hubs). If macOS asks to \"Allow accessory to connect\", click Allow. Leave the HomePod's power unplugged for now.")
+                StepRow(number: 4, icon: "arrow.uturn.down.circle.fill",
+                        title: "Turn it upside down",
+                        detail: "Rest the HomePod on its top, with the adapter and USB cable still connected.")
+                StepRow(number: 5, icon: "powerplug.fill",
                         title: "Plug in HomePod power — last",
-                        detail: "Order matters: USB first, then power. The HomePod boots into DFU mode while upside down and shows up here.")
+                        detail: "Order matters: USB first, then power. The HomePod starts in DFU mode and shows up here within a few seconds.")
                 HStack(spacing: 8) {
                     Spacer().frame(width: 42)
-                    Label("Wait for your Mac to detect DFU mode, then:", systemImage: "clock.fill")
+                    Label("Wait until it shows up here in DFU mode, then:", systemImage: "clock.fill")
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.orange)
                 }
-                StepRow(number: 5, icon: "arrow.up.circle.fill",
-                        title: "Flip it right-side up",
-                        detail: "The HomePod reboots during restore. If it's still upside down, it re-enters DFU instead of continuing. Flip it right-side up now — the USB adapter and cable will stay connected.")
+                StepRow(number: 6, icon: "arrow.uturn.up.circle.fill",
+                        title: "Turn it right-side up — before you click Restore",
+                        detail: "It stays in DFU mode. The HomePod reboots partway through a restore or boot; if it were still upside down then, it would drop back into DFU instead of carrying on. Keep the adapter, USB and power connected.")
             }
         }
     }

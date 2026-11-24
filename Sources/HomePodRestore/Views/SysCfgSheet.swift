@@ -61,7 +61,7 @@ struct SysCfgSheet: View {
             Text(current.phase.title).font(.headline)
         }
         if (model.syscfgBootMode == .sshrd || model.syscfgBootMode == .diags) && current.phase <= .connecting {
-            Text("If the HomePod is upside down for DFU, flip it upright once you see boot activity below.")
+            Text("The HomePod should be right-side up for this. If it's still upside down, turn it over now.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         if current.kind == .restore, let d = current.dump {

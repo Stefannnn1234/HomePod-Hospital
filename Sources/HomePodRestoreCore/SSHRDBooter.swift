@@ -199,7 +199,8 @@ public struct SSHRDBooter: RamdiskBooter {
         public var dfuWaitSeconds: Int
         /// Bounded wait for dropbear to answer after bootx.
         public var sshWaitSeconds: Int
-        /// Pause before bootx so the tech can flip the pod upright.
+        /// Pause before bootx so the tech can turn the pod upright. 0 by default:
+        /// the app's steps have it turned right-side up before the boot starts.
         public var flipWindowSeconds: Int
 
         public init(layout: SSHRDLayout, gaster: URL, irecovery: URL, forwarder: URL? = nil,
@@ -208,7 +209,7 @@ public struct SSHRDBooter: RamdiskBooter {
                     dumpCommand: String = SSHRamdiskTransport.Config.defaultDumpCommand,
                     sinkCommand: String = "syscfg_write",
                     writeSink: (any WriteSink)? = nil,
-                    sendTrustcache: Bool = true, dfuWaitSeconds: Int = 60, sshWaitSeconds: Int = 90, flipWindowSeconds: Int = 12) {
+                    sendTrustcache: Bool = true, dfuWaitSeconds: Int = 60, sshWaitSeconds: Int = 90, flipWindowSeconds: Int = 0) {
             self.layout = layout; self.gaster = gaster; self.irecovery = irecovery
             self.forwarder = forwarder; self.sshTool = sshTool; self.sshpass = sshpass
             self.localPort = localPort; self.sshPassword = sshPassword; self.sshUser = sshUser
@@ -270,7 +271,7 @@ public struct SSHRDBooter: RamdiskBooter {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
             }
             guard inDFU else {
-                throw SysCfgError.transportUnavailable("No HomePod in DFU after \(config.dfuWaitSeconds)s. Flip it upside down with the adapter attached, USB connected, then re-plug power.")
+                throw SysCfgError.transportUnavailable("No HomePod in DFU after \(config.dfuWaitSeconds)s. With the adapter and USB connected, turn it upside down and re-plug power; once it shows up in DFU mode, turn it right-side up and start again.")
             }
 
             onLog("gaster pwn (checkm8)…")
@@ -307,7 +308,7 @@ public struct SSHRDBooter: RamdiskBooter {
             // bootx, or dropbear won't come up.
             let w = max(0, config.flipWindowSeconds)
             if w > 0 {
-                onLog(">>> FLIP THE HOMEPOD UPRIGHT NOW — booting in \(w)s <<<")
+                onLog(">>> If the HomePod is still upside down, turn it right-side up now — booting in \(w)s <<<")
                 for r in stride(from: w, to: 0, by: -1) {
                     onLog("  bootx in \(r)s…")
                     try await Task.sleep(nanoseconds: 1_000_000_000)

@@ -61,12 +61,23 @@ struct IdleDeviceCard: View {
                 dfuContent
             case .recovery:
                 Text("This HomePod is in recovery mode.").font(.callout)
-                Text("Unplug HomePod power, wait a few seconds, then plug power back in (keep USB connected). It should come back in DFU mode.")
+                Text(DFUInstructions.fromRunning)
                     .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                DFUGuideButton(action: "Restore", preferredLocation: device.locationID,
+                               blocker: { model.blocker(for: $0, kind: .restore) },
+                               start: { model.startJob(.restore, on: $0) })
+                    .controlSize(.small)
             case .restore, .unknown:
                 Text("This HomePod is running (not in DFU mode).").font(.callout)
-                Text("To restore it: unplug power, make sure it's upside down with the adapter attached and USB connected, then plug power back in.")
+                Text("To restore it: " + DFUInstructions.fromRunning)
                     .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                DFUGuideButton(action: "Restore", preferredLocation: device.locationID,
+                               blocker: { model.blocker(for: $0, kind: .restore) },
+                               start: { model.startJob(.restore, on: $0) })
+                    .controlSize(.small)
+                NANDHealthSection(device: device)
             }
         }
     }
@@ -88,6 +99,10 @@ struct IdleDeviceCard: View {
             Label("This doesn't look like a 1st-gen HomePod (chip \(ib.cpid.map { String(format: "0x%X", $0) } ?? "?")). This app only restores the original HomePod.",
                   systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange).font(.callout)
+        } else if let ib, let why = A8BoardGate.bootBlocker(ib) {
+            // Same A8 chip, different product (or a board id we don't know).
+            Label(why, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange).font(.callout)
         } else if let record = model.healthRecord(for: device),
                   record.assessment == .partiallyFunctional || record.assessment == .partsOnly {
             // Board has known hardware issues — show tailored UI
@@ -99,13 +114,17 @@ struct IdleDeviceCard: View {
 
     /// Normal DFU content for healthy / unknown boards.
     @ViewBuilder private var normalDFUContent: some View {
+        if let ib = device.iboot, let note = A8BoardGate.boardNote(ib) {
+            Label(note, systemImage: "info.circle.fill")
+                .foregroundStyle(.orange).font(.callout)
+        }
         if device.speed == 0 || device.speed == 1 {
             Label("Connected at USB full speed. That usually means the adapter isn't sitting flat — the restore may fail. Try re-seating it.",
                   systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange).font(.callout)
         }
-        Label("Make sure the HomePod is right-side up before starting — it reboots during restore.",
-              systemImage: "arrow.up.circle.fill")
+        Label("Turn the HomePod right-side up before you click Restore — it reboots during the restore.",
+              systemImage: "arrow.uturn.up.circle.fill")
             .foregroundStyle(.orange).font(.callout)
         let blocker = model.blocker(for: device, kind: .restore)
         Text(blocker ?? "Ready to restore. This erases the HomePod and installs \(model.selectedFirmware?.info.productVersion ?? "the selected") software.")
@@ -157,6 +176,11 @@ struct IdleDeviceCard: View {
             }
             .fixedSize()
             .controlSize(.large)
+
+            DFUGuideButton(action: "Restore", preferredLocation: device.locationID,
+                           blocker: { model.blocker(for: $0, kind: .restore) },
+                           start: { model.startJob(.restore, on: $0) })
+                .controlSize(.large)
         }
     }
 
@@ -192,7 +216,11 @@ struct IdleDeviceCard: View {
 
         // Boot options based on health
         VStack(alignment: .leading, spacing: 8) {
-            Text("Available options").font(.callout.weight(.semibold))
+            HStack {
+                Text("Available options").font(.callout.weight(.semibold))
+                Spacer()
+                DFUGuideButton(action: "Restore or Boot", preferredLocation: device.locationID).controlSize(.small)
+            }
             let options = record.bootOptions
             ForEach(options) { opt in
                 BootOptionRow(option: opt, device: device)
@@ -421,7 +449,7 @@ struct JobCard: View {
                 Label("Unplug power from the HomePod", systemImage: "1.circle.fill")
                 Label("Unplug the USB cable", systemImage: "2.circle.fill")
                 Label("Remove the adapter", systemImage: "3.circle.fill")
-                Label("Flip it right-side up, plug in power, and set it up in the Home app", systemImage: "4.circle.fill")
+                Label("Plug in power and set it up in the Home app", systemImage: "4.circle.fill")
             }
             .font(.callout)
             Text("Tip: after setup, let the HomePod update itself from the Home app.")

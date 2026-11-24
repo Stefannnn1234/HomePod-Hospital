@@ -717,6 +717,10 @@ extension AppModel {
             try fm.createDirectory(at: base, withIntermediateDirectories: true)
             if let p = bundle.panicLog, !p.isEmpty {
                 try p.write(to: base.appendingPathComponent("paniclog.bin"), options: .atomic)
+                if let panic = PanicLogReport.decode(p) {
+                    let text = panic.panicText + (panic.otherLog.map { "\n\n--- later console output ---\n" + $0 } ?? "")
+                    try text.data(using: .utf8)?.write(to: base.appendingPathComponent("paniclog.txt"), options: .atomic)
+                }
             }
             if let t = bundle.ioregText, !t.isEmpty {
                 try t.data(using: .utf8)?.write(to: base.appendingPathComponent("ioreg.txt"), options: .atomic)

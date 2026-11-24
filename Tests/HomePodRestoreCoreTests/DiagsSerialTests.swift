@@ -293,13 +293,15 @@ final class DiagsSerialTests: XCTestCase {
         // Everything new only reads, except the LED colours (live state).
         let ledColours: [DiagsQuickAction.Kind] = [.ledRed, .ledGreen, .ledBlue, .ledWhite]
         let readOnly: [DiagsQuickAction.Kind] = [.system, .socInfo, .bootConfig, .controlBits, .controlBitDump,
-                                                 .pmuEvents, .pmuADC, .pmuRegisters, .buckCheck, .rtc,
+                                                 .pmuEvents, .pmuADC, .pmuRegisters, .buckCheck, .rtc, .iBootBootState,
                                                  .nandTests, .nandParams, .memoryInfo, .memoryMap, .filesystem, .nvram]
         for kind in readOnly { XCTAssertEqual(DiagsQuickAction.action(kind).risk, .readOnly, kind.rawValue) }
         for kind in ledColours { XCTAssertEqual(DiagsQuickAction.action(kind).risk, .changesState, kind.rawValue) }
 
         XCTAssertEqual(DiagsQuickAction.actions(in: .factoryHistory).map(\.kind), [.controlBits, .controlBitDump])
-        XCTAssertEqual(DiagsQuickAction.actions(in: .power).map(\.kind), [.pmuEvents, .pmuADC, .pmuRegisters, .buckCheck, .rtc])
+        XCTAssertEqual(DiagsQuickAction.actions(in: .power).map(\.kind), [.pmuEvents, .pmuADC, .pmuRegisters, .buckCheck, .iBootBootState, .rtc])
+        XCTAssertEqual(commands(.iBootBootState), ["pmurw -r 0x4000 21"])
+        XCTAssertEqual(DiagsCommandReference.risk(ofLine: "pmurw -w 0x4014 0xa0"), .unknown, "only `-r` is known to just read")
         XCTAssertEqual(DiagsQuickAction.actions(in: .memory).map(\.kind), [.memoryInfo, .memoryMap])
         XCTAssertEqual(DiagsQuickAction.actions(in: .storage).map(\.kind), [.filesystem, .nvram])
         XCTAssertEqual(DiagsQuickAction.actions(in: .led).map(\.kind), [.ledOn, .ledOff, .ledRed, .ledGreen, .ledBlue, .ledWhite])

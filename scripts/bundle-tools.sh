@@ -59,8 +59,9 @@ else
   echo "hBootPatcher did not build; the Nicotine boot loaders cannot be made without it."; exit 1
 fi
 
-echo "==> Copying SysCfg / builder tools (img4tool, ra1nsn0w, tsschecker, iproxy, sshpass)"
-for t in img4tool ra1nsn0w tsschecker iproxy sshpass; do
+echo "==> Copying SysCfg / builder tools (img4tool, ra1nsn0w, tsschecker, iproxy, sshpass, ideviceinfo)"
+# ideviceinfo (libimobiledevice) reads a running pod's NAND statistics over USB.
+for t in img4tool ra1nsn0w tsschecker iproxy sshpass ideviceinfo; do
   P="$(command -v "$t" || true)"
   if [ -n "$P" ]; then cp "$P" "$BIN/$t"; echo "  + $t"; else echo "  ! $t not found — install builder tools first (skipping; SysCfg feature needs it)"; fi
 done
@@ -68,11 +69,11 @@ chmod +x "$BIN"/*
 
 echo "==> Bundling libraries"
 ARGS=()
-for t in "$BIN"/idevicerestore "$BIN"/irecovery "$BIN"/img4tool "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
+for t in "$BIN"/idevicerestore "$BIN"/irecovery "$BIN"/img4tool "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass "$BIN"/ideviceinfo; do
   [ -f "$t" ] && ARGS+=(-x "$t")
 done
 SRCH=(-s "$(brew --prefix)/lib" -s /usr/local/lib)
-for f in openssl@3 libplist libusbmuxd libimobiledevice-glue libgeneral; do
+for f in openssl@3 libplist libusbmuxd libimobiledevice-glue libimobiledevice libgeneral; do
   d="$(brew --prefix "$f" 2>/dev/null)/lib"; [ -d "$d" ] && SRCH+=(-s "$d")
 done
 # stdin is closed on purpose: when dylibbundler cannot find a library it asks for
@@ -87,7 +88,7 @@ fi
 # Record the CPU architecture(s) so the app ignores these on other CPUs.
 lipo -archs "$BIN/idevicerestore" > "$BIN/ARCHS"
 echo "Bundled tools for: $(cat "$BIN/ARCHS")"
-for t in "$BIN"/gaster "$BIN"/irecovery "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass; do
+for t in "$BIN"/gaster "$BIN"/irecovery "$BIN"/idevicerestore "$BIN"/img4tool "$BIN"/hBootPatcher "$BIN"/ra1nsn0w "$BIN"/tsschecker "$BIN"/iproxy "$BIN"/sshpass "$BIN"/ideviceinfo; do
   [ -f "$t" ] || continue
   LEAKS="$(otool -L "$t" | tail -n +2 | grep -vE "/usr/lib/|/System/|@executable_path" || true)"
   if [ -n "$LEAKS" ]; then echo "WARNING: $(basename "$t") still links outside the bundle:"; echo "$LEAKS"; fi

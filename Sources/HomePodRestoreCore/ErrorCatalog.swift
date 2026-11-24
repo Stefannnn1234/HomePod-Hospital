@@ -125,7 +125,8 @@ public enum ErrorCatalog {
                    title: "Couldn't unlock the HomePod",
                    explanation: "The HomePod didn't respond to the unlock step. Most of the time this is the adapter or cable; occasionally it's a hardware fault.",
                    suggestions: [
-                    "Make sure the HomePod is upside down and the adapter sits flat on the port (clean off old adhesive).",
+                    "Make sure the adapter sits flat on the port (clean off old adhesive).",
+                    "Put it in DFU mode again: adapter and USB connected, upside down, then power. Once it shows up in DFU mode, turn it right-side up and start again.",
                     "Connect USB first, then power. Order matters.",
                     "Try a different USB port directly on your Mac (no hubs) and a different cable.",
                     "Restart your Mac and try again.",
